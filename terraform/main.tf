@@ -19,7 +19,7 @@ resource "local_file" "private_key_pem" {
   depends_on           = [tls_private_key.strapi_key]
 }
 
-resource "aws_security_group" "strapi_seg" {
+resource "aws_security_group" "strapi_sg" {
   name        = "strapi-sg"
   description = "Allow SSH and Strapi"
   vpc_id      = aws_vpc.main.id
