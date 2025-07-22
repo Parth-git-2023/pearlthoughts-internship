@@ -1,0 +1,79 @@
+'use strict';
+
+var strapiAdmin = require('@strapi/admin/strapi-admin');
+var reactIntl = require('react-intl');
+var reactQuery = require('react-query');
+var pluginId = require('../pluginId.js');
+require('byte-size');
+require('date-fns');
+var getTrad = require('../utils/getTrad.js');
+require('qs');
+require('../constants.js');
+require('../utils/urlYupSchema.js');
+
+const useBulkRemove = ()=>{
+    const { toggleNotification } = strapiAdmin.useNotification();
+    const { formatMessage } = reactIntl.useIntl();
+    const queryClient = reactQuery.useQueryClient();
+    const { post } = strapiAdmin.useFetchClient();
+    const bulkRemoveQuery = (filesAndFolders)=>{
+        const payload = filesAndFolders.reduce((acc, selected)=>{
+            const { id, type } = selected;
+            const key = type === 'asset' ? 'fileIds' : 'folderIds';
+            if (!acc[key]) {
+                acc[key] = [];
+            }
+            acc[key].push(id);
+            return acc;
+        }, {});
+        return post('/upload/actions/bulk-delete', payload);
+    };
+    const mutation = reactQuery.useMutation(bulkRemoveQuery, {
+        onSuccess (res) {
+            const { data: { data } } = res;
+            if (data?.files?.length > 0) {
+                queryClient.refetchQueries([
+                    pluginId.pluginId,
+                    'assets'
+                ], {
+                    active: true
+                });
+                queryClient.refetchQueries([
+                    pluginId.pluginId,
+                    'asset-count'
+                ], {
+                    active: true
+                });
+            }
+            if (data?.folders?.length > 0) {
+                queryClient.refetchQueries([
+                    pluginId.pluginId,
+                    'folders'
+                ], {
+                    active: true
+                });
+            }
+            toggleNotification({
+                type: 'success',
+                message: formatMessage({
+                    id: getTrad.getTrad('modal.remove.success-label'),
+                    defaultMessage: 'Elements have been successfully deleted.'
+                })
+            });
+        },
+        onError (error) {
+            toggleNotification({
+                type: 'danger',
+                message: error?.message
+            });
+        }
+    });
+    const remove = (...args)=>mutation.mutateAsync(...args);
+    return {
+        ...mutation,
+        remove
+    };
+};
+
+exports.useBulkRemove = useBulkRemove;
+//# sourceMappingURL=useBulkRemove.js.map

@@ -1,0 +1,12 @@
+'use strict';
+
+var strapiAdmin = require('@strapi/admin/strapi-admin');
+
+const i18nApi = strapiAdmin.adminApi.enhanceEndpoints({
+    addTagTypes: [
+        'Locale'
+    ]
+});
+
+exports.i18nApi = i18nApi;
+//# sourceMappingURL=api.js.map

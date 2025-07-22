@@ -1,4 +1,15 @@
+# Node modules & cache
 node_modules
 build
 .cache
-.env
+
+# SSH key or credentials
+terraform/strapi-key.pem
+*.pem
+
+# Git and Terraform
+.git
+.terraform
+*.tf
+*.tfstate
+*.tfvars

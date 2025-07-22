@@ -1,0 +1,18 @@
+import '@strapi/types';
+import config from './config.mjs';
+import bootstrap from './bootstrap.mjs';
+import services from './services/index.mjs';
+import exportObject from './controllers/index.mjs';
+import routes from './routes/index.mjs';
+
+// eslint-disable-next-line import/no-extraneous-dependencies
+var index = (()=>({
+        config,
+        bootstrap,
+        services,
+        controllers: exportObject,
+        routes
+    }));
+
+export { index as default };
+//# sourceMappingURL=index.mjs.map

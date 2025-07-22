@@ -1,0 +1,21 @@
+'use strict';
+
+var strapiAdmin = require('@strapi/admin/strapi-admin');
+
+const contentManagerApi = strapiAdmin.adminApi.enhanceEndpoints({
+    addTagTypes: [
+        'ComponentConfiguration',
+        'ContentTypesConfiguration',
+        'ContentTypeSettings',
+        'Document',
+        'InitialData',
+        'HistoryVersion',
+        'Relations',
+        'UidAvailability',
+        'RecentDocumentList',
+        'GuidedTourMeta'
+    ]
+});
+
+exports.contentManagerApi = contentManagerApi;
+//# sourceMappingURL=api.js.map
