@@ -2,6 +2,10 @@ name: Terraform Deploy on EC2
 
 on:
   workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker Image Tag to deploy'
+        required: true
 
 jobs:
   deploy:
@@ -12,17 +16,9 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Download Image Tag
-        uses: actions/download-artifact@v4
-        with:
-          name: image-tag
-          path: .
-
-      - name: Set Image Tag
-        id: image
+      - name: Write Image Tag to file
         run: |
-          IMAGE_TAG=$(cat image-tag.txt)
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "TAG=${{ github.event.inputs.image_tag }}" > terraform/image-tag.txt
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
@@ -35,11 +31,11 @@ jobs:
 
       - name: Terraform Plan
         working-directory: terraform
-        run: terraform plan -var="image_tag=${{ env.IMAGE_TAG }}"
+        run: terraform plan -var="image_tag=${{ github.event.inputs.image_tag }}"
 
       - name: Terraform Apply
         working-directory: terraform
-        run: terraform apply -auto-approve -var="image_tag=${{ env.IMAGE_TAG }}"
+        run: terraform apply -auto-approve -var="image_tag=${{ github.event.inputs.image_tag }}"
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
