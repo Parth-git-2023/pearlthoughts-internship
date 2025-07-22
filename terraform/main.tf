@@ -13,10 +13,45 @@ resource "aws_key_pair" "strapi_key" {
 }
 
 resource "local_file" "private_key_pem" {
-  content              = tls_private_key.strapi_key.private_key_pem
-  filename             = "${path.module}/strapi-key.pem"
-  file_permission      = "0400"
-  depends_on           = [tls_private_key.strapi_key]
+  content         = tls_private_key.strapi_key.private_key_pem
+  filename        = "${path.module}/strapi-key.pem"
+  file_permission = "0400"
+  depends_on      = [tls_private_key.strapi_key]
+}
+
+resource "aws_vpc" "main" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+
+  tags = {
+    Name = "main-vpc"
+  }
+}
+
+resource "aws_internet_gateway" "gw" {
+  vpc_id = aws_vpc.main.id
+}
+
+resource "aws_subnet" "public_subnet" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.1.0/24"
+  map_public_ip_on_launch = true
+  availability_zone       = "us-east-2a"
+}
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.gw.id
+  }
+}
+
+resource "aws_route_table_association" "a" {
+  subnet_id      = aws_subnet.public_subnet.id
+  route_table_id = aws_route_table.public.id
 }
 
 resource "aws_security_group" "strapi_sg" {
@@ -50,14 +85,15 @@ resource "aws_security_group" "strapi_sg" {
 }
 
 resource "aws_instance" "strapi_ec2" {
-  ami                         = "ami-0a695f0d95cefc163" # Ubuntu 22.04 us-east-2
+  ami                         = "ami-0a695f0d95cefc163" # Ubuntu 22.04 in us-east-2
   instance_type               = var.instance_type
   key_name                    = aws_key_pair.strapi_key.key_name
+  subnet_id                   = aws_subnet.public_subnet.id
   vpc_security_group_ids      = [aws_security_group.strapi_sg.id]
   associate_public_ip_address = true
 
   tags = {
-    Name = "StrapiPInstance"
+    Name = "StrapiInstance"
   }
 
   provisioner "remote-exec" {
