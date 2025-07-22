@@ -32,15 +32,15 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
-      - name: Upload PEM file
-        uses: actions/upload-artifact@v4
-        with:
-          name: strapi-key
-          path: terraform/strapi-key.pem
-
       - name: Terraform Apply
         working-directory: terraform
         run: terraform apply -auto-approve -var="image_tag=${{ github.event.inputs.image_tag }}"
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Upload PEM Key
+        uses: actions/upload-artifact@v4
+        with:
+          name: strapi-key
+          path: terraform/strapi-key.pem
