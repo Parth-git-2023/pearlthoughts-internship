@@ -25,7 +25,7 @@ resource "aws_vpc" "main" {
   enable_dns_hostnames = true
 
   tags = {
-    Name = "main-vpc"
+    Name = "main-vpc-parth"
   }
 }
 
@@ -93,7 +93,7 @@ resource "aws_instance" "strapi_ec2" {
   associate_public_ip_address = true
 
   tags = {
-    Name = "StrapiInstance"
+    Name = "StrapiPInstance"
   }
 
   provisioner "remote-exec" {
