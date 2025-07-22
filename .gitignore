@@ -1,11 +1,31 @@
-# SSH key
-terraform/strapi-key.pem
-
-# Terraform state files
+# === Terraform ===
 *.tfstate
 *.tfstate.backup
 .terraform/
 terraform.tfvars
+terraform/strapi-key.pem
 
-# Artifacts
+# === Node.js / Strapi ===
+node_modules/
+.cache/
+build/
+dist/
+.tmp/
+.env
+.env.* 
+*.log
+
+# === Docker ===
+*.local
+docker-compose.override.yml
 image-tag.txt
+
+# === VSCode / Editors ===
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# === OS Files ===
+Thumbs.db
+ehthumbs.db
