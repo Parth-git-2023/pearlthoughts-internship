@@ -98,12 +98,14 @@ resource "aws_instance" "strapi_ec2" {
 
   provisioner "remote-exec" {
     inline = [
+      "echo 'Waiting for EC2 instance to fully boot...'",
+      "sleep 30",
       "sudo apt update -y",
       "sudo apt install -y docker.io",
       "sudo usermod -aG docker ubuntu",
       "sudo systemctl enable docker",
       "sudo systemctl start docker",
-      "sleep 10", # Wait for Docker to fully start
+      "sleep 10",
       "sudo docker stop strapi || true",
       "sudo docker rm strapi || true",
       "sudo docker pull ${var.image_tag}",
@@ -115,6 +117,7 @@ resource "aws_instance" "strapi_ec2" {
       user        = "ubuntu"
       private_key = tls_private_key.strapi_key.private_key_pem
       host        = self.public_ip
+      timeout     = "2m"
     }
   }
 }
