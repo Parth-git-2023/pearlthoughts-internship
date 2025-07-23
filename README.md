@@ -13,4 +13,4 @@
 - Node.js
 - Strapi (v5)
 - SQLite (default DB)
-- Git + GitHub
+  
