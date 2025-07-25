@@ -1,82 +1,34 @@
 provider "aws" {
-  region = var.region
+  region = "us-east-2"
 }
 
-resource "tls_private_key" "strapi_key" {
-  algorithm = "RSA"
-  rsa_bits  = 4096
+resource "aws_ecr_repository" "parth_strapi" {
+  name = "parth-strapi-ecr"
 }
 
-resource "aws_key_pair" "strapi_key" {
-  key_name   = var.key_name
-  public_key = tls_private_key.strapi_key.public_key_openssh
+data "aws_vpc" "default" {
+  default = true
 }
 
-resource "local_file" "private_key_pem" {
-  content         = tls_private_key.strapi_key.private_key_pem
-  filename        = "${path.module}/strapi-key.pem"
-  file_permission = "0400"
-  depends_on      = [tls_private_key.strapi_key]
-}
-
-resource "aws_vpc" "main" {
-  cidr_block           = "10.0.0.0/16"
-  enable_dns_support   = true
-  enable_dns_hostnames = true
-
-  tags = {
-    Name = "main-vpc-parth"
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
   }
 }
 
-resource "aws_internet_gateway" "gw" {
-  vpc_id = aws_vpc.main.id
-}
-
-resource "aws_subnet" "public_subnet" {
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.1.0/24"
-  map_public_ip_on_launch = true
-  availability_zone       = "us-east-2a"
-}
-
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
-
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.gw.id
-  }
-}
-
-resource "aws_route_table_association" "a" {
-  subnet_id      = aws_subnet.public_subnet.id
-  route_table_id = aws_route_table.public.id
-}
-
-resource "aws_security_group" "strapi_sg" {
-  name        = "strapi-sg"
-  description = "Allow SSH and Strapi"
-  vpc_id      = aws_vpc.main.id
+resource "aws_security_group" "alb_sg" {
+  name   = "parth-alb-sg"
+  vpc_id = data.aws_vpc.default.id
 
   ingress {
-    description = "SSH access"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "Strapi access"
-    from_port   = 1337
-    to_port     = 1337
+    from_port   = 80
+    to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
-    description = "Allow all egress"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -84,40 +36,85 @@ resource "aws_security_group" "strapi_sg" {
   }
 }
 
-resource "aws_instance" "strapi_ec2" {
-  ami                         = "ami-0a695f0d95cefc163" # Ubuntu 22.04 us-east-2
-  instance_type               = var.instance_type
-  key_name                    = aws_key_pair.strapi_key.key_name
-  subnet_id                   = aws_subnet.public_subnet.id
-  vpc_security_group_ids      = [aws_security_group.strapi_sg.id]
-  associate_public_ip_address = true
+resource "aws_lb" "parth_alb" {
+  name               = "parth-strapi-alb"
+  internal           = false
+  load_balancer_type = "application"
+  subnets            = data.aws_subnets.default.ids
+  security_groups    = [aws_security_group.alb_sg.id]
+}
 
-  tags = {
-    Name = "StrapiPInstance"
+resource "aws_lb_target_group" "parth_tg" {
+  name        = "parth-strapi-tg"
+  port        = 1337
+  protocol    = "HTTP"
+  vpc_id      = data.aws_vpc.default.id
+  target_type = "ip"
+  health_check {
+    path                = "/"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+    matcher             = "200"
   }
+}
 
-  provisioner "remote-exec" {
-    inline = [
-      "echo 'Waiting for EC2 instance to fully boot...'",
-      "sleep 30",
-      "sudo apt update -y",
-      "sudo apt install -y docker.io",
-      "sudo usermod -aG docker ubuntu",
-      "sudo systemctl enable docker",
-      "sudo systemctl start docker",
-      "sleep 10",
-      "sudo docker stop strapi || true",
-      "sudo docker rm strapi || true",
-      "sudo docker pull ${var.image_tag}",
-      "sudo docker run -d --name strapi -p 1337:1337 ${var.image_tag}"
-    ]
+resource "aws_lb_listener" "parth_listener" {
+  load_balancer_arn = aws_lb.parth_alb.arn
+  port              = 80
+  protocol          = "HTTP"
 
-    connection {
-      type        = "ssh"
-      user        = "ubuntu"
-      private_key = tls_private_key.strapi_key.private_key_pem
-      host        = self.public_ip
-      timeout     = "2m"
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.parth_tg.arn
+  }
+}
+
+resource "aws_ecs_cluster" "parth_cluster" {
+  name = "parth-strapi-cluster"
+}
+
+resource "aws_ecs_task_definition" "parth_task" {
+  family                   = "parth-strapi-task"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "512"
+  memory                   = "1024"
+  execution_role_arn       = "arn:aws:iam::607700977843:role/ecs-task-execution-role"
+
+  container_definitions = jsonencode([
+    {
+      name      = "parth-strapi"
+      image     = var.ecr_image_url
+      portMappings = [
+        {
+          containerPort = 1337
+          protocol      = "tcp"
+        }
+      ]
     }
+  ])
+}
+
+resource "aws_ecs_service" "parth_service" {
+  name            = "parth-strapi-service"
+  cluster         = aws_ecs_cluster.parth_cluster.id
+  task_definition = aws_ecs_task_definition.parth_task.arn
+  launch_type     = "FARGATE"
+  desired_count   = 1
+
+  network_configuration {
+    subnets         = data.aws_subnets.default.ids
+    security_groups = [aws_security_group.alb_sg.id]
+    assign_public_ip = true
   }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.parth_tg.arn
+    container_name   = "parth-strapi"
+    container_port   = 1337
+  }
+
+  depends_on = [aws_lb_listener.parth_listener]
 }

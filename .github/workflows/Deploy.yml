@@ -1,0 +1,52 @@
+name: Deploy Strapi to ECS
+
+on:
+  push:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-2
+  ECR_REPO: parth-strapi-ecr
+  ECS_CLUSTER: parth-strapi-cluster
+  ECS_SERVICE: parth-strapi-service
+  TASK_FAMILY: parth-strapi-task
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build & Push Docker image
+      run: |
+        IMAGE_TAG=parth-strapi:$(date +%s)
+        ECR_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}
+        docker build -t $ECR_URI:$IMAGE_TAG .
+        docker push $ECR_URI:$IMAGE_TAG
+        echo "image=$ECR_URI:$IMAGE_TAG" >> $GITHUB_ENV
+
+    - name: Install Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.6.6
+
+    - name: Terraform Init
+      working-directory: terraform
+      run: terraform init
+
+    - name: Terraform Apply
+      working-directory: terraform
+      run: terraform apply -auto-approve -var="ecr_image_url=${{ env.image }}"
