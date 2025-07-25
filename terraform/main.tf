@@ -17,7 +17,7 @@ data "aws_subnets" "default" {
 
 # Choose 2 unique subnets in different AZs
 locals {
-  distinct_subnets = slice(distinct(data.aws_subnets.default.id), 0, 2)
+  distinct_subnets = slice(distinct(data.aws_subnets.default.ids), 0, 2)
 }
 
 resource "aws_security_group" "alb_sg" {
