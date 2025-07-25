@@ -32,11 +32,13 @@ jobs:
 
     - name: Build & Push Docker image
       run: |
-        IMAGE_TAG=parth-strapi:$(date +%s)
-        ECR_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}
+        TIMESTAMP=$(date +%s)
+        IMAGE_TAG=parth-strapi-$TIMESTAMP
+        ECR_URI=607700977843.dkr.ecr.us-east-2.amazonaws.com/parth-strapi-ecr
         docker build -t $ECR_URI:$IMAGE_TAG .
         docker push $ECR_URI:$IMAGE_TAG
         echo "image=$ECR_URI:$IMAGE_TAG" >> $GITHUB_ENV
+
 
     - name: Install Terraform
       uses: hashicorp/setup-terraform@v3
