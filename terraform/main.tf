@@ -119,14 +119,3 @@ resource "aws_ecs_service" "parth_service" {
   depends_on = [aws_lb_listener.parth_listener]
 }
 
-# OPTIONAL: ECR repo only if you want Terraform to manage it
-# REMOVE this block if GitHub Actions already creates it
-# Or keep it with prevent_destroy to avoid future conflicts
-resource "aws_ecr_repository" "parth_strapi" {
-  name = "parth-strapi-ecr"
-
-  lifecycle {
-    prevent_destroy = true
-    ignore_changes  = [image_tag_mutability, encryption_configuration]
-  }
-}
