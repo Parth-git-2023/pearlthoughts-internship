@@ -118,4 +118,3 @@ resource "aws_ecs_service" "parth_service" {
 
   depends_on = [aws_lb_listener.parth_listener]
 }
-
