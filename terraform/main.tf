@@ -2,14 +2,20 @@ provider "aws" {
   region = "us-east-2"
 }
 
+# Get default VPC
 data "aws_vpc" "default" {
   default = true
 }
 
-data "aws_subnet_ids" "default" {
-  vpc_id = data.aws_vpc.default.id
+# Get all subnets in the default VPC (valid data source)
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
 }
 
+# Security Group for ALB
 resource "aws_security_group" "alb_sg" {
   name   = "parth-alb-sg"
   vpc_id = data.aws_vpc.default.id
@@ -29,20 +35,23 @@ resource "aws_security_group" "alb_sg" {
   }
 }
 
+# Application Load Balancer
 resource "aws_lb" "parth_alb" {
   name               = "parth-strapi-alb"
   internal           = false
   load_balancer_type = "application"
-  subnets            = data.aws_subnet_ids.default.ids
+  subnets            = data.aws_subnets.default.ids
   security_groups    = [aws_security_group.alb_sg.id]
 }
 
+# Target Group for ECS service
 resource "aws_lb_target_group" "parth_tg" {
   name        = "parth-strapi-tg"
   port        = 1337
   protocol    = "HTTP"
   vpc_id      = data.aws_vpc.default.id
   target_type = "ip"
+
   health_check {
     path                = "/"
     interval            = 30
@@ -53,6 +62,7 @@ resource "aws_lb_target_group" "parth_tg" {
   }
 }
 
+# Listener on port 80 for ALB
 resource "aws_lb_listener" "parth_listener" {
   load_balancer_arn = aws_lb.parth_alb.arn
   port              = 80
@@ -64,10 +74,12 @@ resource "aws_lb_listener" "parth_listener" {
   }
 }
 
+# ECS Cluster
 resource "aws_ecs_cluster" "parth_cluster" {
   name = "parth-strapi-cluster"
 }
 
+# ECS Task Definition
 resource "aws_ecs_task_definition" "parth_task" {
   family                   = "parth-strapi-task"
   network_mode             = "awsvpc"
@@ -86,6 +98,7 @@ resource "aws_ecs_task_definition" "parth_task" {
   }])
 }
 
+# ECS Service
 resource "aws_ecs_service" "parth_service" {
   name            = "parth-strapi-service"
   cluster         = aws_ecs_cluster.parth_cluster.id
@@ -94,7 +107,7 @@ resource "aws_ecs_service" "parth_service" {
   desired_count   = 1
 
   network_configuration {
-    subnets          = data.aws_subnet_ids.default.ids
+    subnets          = data.aws_subnets.default.ids
     security_groups  = [aws_security_group.alb_sg.id]
     assign_public_ip = true
   }
@@ -106,4 +119,10 @@ resource "aws_ecs_service" "parth_service" {
   }
 
   depends_on = [aws_lb_listener.parth_listener]
+}
+
+# ECR Repo (optional but safe to keep here if not already created manually)
+resource "aws_ecr_repository" "parth_strapi" {
+  name = "parth-strapi-ecr"
+  force_delete = true
 }
