@@ -7,7 +7,7 @@ data "aws_vpc" "default" {
   default = true
 }
 
-# Get all subnets in the default VPC (valid data source)
+# Get all subnets in default VPC
 data "aws_subnets" "default" {
   filter {
     name   = "vpc-id"
@@ -15,7 +15,11 @@ data "aws_subnets" "default" {
   }
 }
 
-# Security Group for ALB
+# Choose 2 unique subnets in different AZs
+locals {
+  distinct_subnets = slice(distinct(data.aws_subnet_ids.default.ids), 0, 2)
+}
+
 resource "aws_security_group" "alb_sg" {
   name   = "parth-alb-sg"
   vpc_id = data.aws_vpc.default.id
@@ -35,16 +39,14 @@ resource "aws_security_group" "alb_sg" {
   }
 }
 
-# Application Load Balancer
 resource "aws_lb" "parth_alb" {
   name               = "parth-strapi-alb"
   internal           = false
   load_balancer_type = "application"
-  subnets            = data.aws_subnets.default.ids
+  subnets            = local.distinct_subnets
   security_groups    = [aws_security_group.alb_sg.id]
 }
 
-# Target Group for ECS service
 resource "aws_lb_target_group" "parth_tg" {
   name        = "parth-strapi-tg"
   port        = 1337
@@ -62,7 +64,6 @@ resource "aws_lb_target_group" "parth_tg" {
   }
 }
 
-# Listener on port 80 for ALB
 resource "aws_lb_listener" "parth_listener" {
   load_balancer_arn = aws_lb.parth_alb.arn
   port              = 80
@@ -74,12 +75,10 @@ resource "aws_lb_listener" "parth_listener" {
   }
 }
 
-# ECS Cluster
 resource "aws_ecs_cluster" "parth_cluster" {
   name = "parth-strapi-cluster"
 }
 
-# ECS Task Definition
 resource "aws_ecs_task_definition" "parth_task" {
   family                   = "parth-strapi-task"
   network_mode             = "awsvpc"
@@ -98,7 +97,6 @@ resource "aws_ecs_task_definition" "parth_task" {
   }])
 }
 
-# ECS Service
 resource "aws_ecs_service" "parth_service" {
   name            = "parth-strapi-service"
   cluster         = aws_ecs_cluster.parth_cluster.id
@@ -107,8 +105,8 @@ resource "aws_ecs_service" "parth_service" {
   desired_count   = 1
 
   network_configuration {
-    subnets          = data.aws_subnets.default.ids
-    security_groups  = [aws_security_group.alb_sg.id]
+    subnets         = local.distinct_subnets
+    security_groups = [aws_security_group.alb_sg.id]
     assign_public_ip = true
   }
 
@@ -121,8 +119,14 @@ resource "aws_ecs_service" "parth_service" {
   depends_on = [aws_lb_listener.parth_listener]
 }
 
-# ECR Repo (optional but safe to keep here if not already created manually)
+# OPTIONAL: ECR repo only if you want Terraform to manage it
+# REMOVE this block if GitHub Actions already creates it
+# Or keep it with prevent_destroy to avoid future conflicts
 resource "aws_ecr_repository" "parth_strapi" {
   name = "parth-strapi-ecr"
-  force_delete = true
+
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = [image_tag_mutability, encryption_configuration]
+  }
 }
