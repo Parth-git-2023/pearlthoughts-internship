@@ -20,6 +20,7 @@ locals {
   distinct_subnets = slice(distinct(data.aws_subnets.default.ids), 0, 2)
 }
 
+# ALB Security Group (allows internet traffic on port 80)
 resource "aws_security_group" "alb_sg" {
   name   = "parth-alb-sg"
   vpc_id = data.aws_vpc.default.id
@@ -36,6 +37,30 @@ resource "aws_security_group" "alb_sg" {
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# ECS Task Security Group (allows traffic from ALB on 1337)
+resource "aws_security_group" "ecs_service_sg" {
+  name   = "parth-ecs-strapi-sg"
+  vpc_id = data.aws_vpc.default.id
+
+  ingress {
+    from_port       = 1337
+    to_port         = 1337
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb_sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "ecs-strapi-sg"
   }
 }
 
@@ -105,8 +130,8 @@ resource "aws_ecs_service" "parth_service" {
   desired_count   = 1
 
   network_configuration {
-    subnets         = local.distinct_subnets
-    security_groups = [aws_security_group.alb_sg.id]
+    subnets          = local.distinct_subnets
+    security_groups  = [aws_security_group.ecs_service_sg.id] # ✅ fixed
     assign_public_ip = true
   }
 
