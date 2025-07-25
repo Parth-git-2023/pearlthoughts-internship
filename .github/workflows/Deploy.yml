@@ -7,6 +7,7 @@ on:
 env:
   AWS_REGION: us-east-2
   ECR_REPO: parth-strapi-ecr
+  ECR_ACCOUNT: 607700977843
   ECS_CLUSTER: parth-strapi-cluster
   ECS_SERVICE: parth-strapi-service
   TASK_FAMILY: parth-strapi-task
@@ -26,6 +27,11 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
+    - name: Ensure ECR Repo Exists
+      run: |
+        aws ecr describe-repositories --repository-names $ECR_REPO || \
+        aws ecr create-repository --repository-name $ECR_REPO
+
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
@@ -34,11 +40,10 @@ jobs:
       run: |
         TIMESTAMP=$(date +%s)
         IMAGE_TAG=parth-strapi-$TIMESTAMP
-        ECR_URI=607700977843.dkr.ecr.us-east-2.amazonaws.com/parth-strapi-ecr
+        ECR_URI=${{ env.ECR_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}
         docker build -t $ECR_URI:$IMAGE_TAG .
         docker push $ECR_URI:$IMAGE_TAG
         echo "image=$ECR_URI:$IMAGE_TAG" >> $GITHUB_ENV
-
 
     - name: Install Terraform
       uses: hashicorp/setup-terraform@v3
