@@ -2,19 +2,12 @@ provider "aws" {
   region = "us-east-2"
 }
 
-resource "aws_ecr_repository" "parth_strapi" {
-  name = "parth-strapi-ecr"
-}
-
 data "aws_vpc" "default" {
   default = true
 }
 
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
-  }
+data "aws_subnet_ids" "default" {
+  vpc_id = data.aws_vpc.default.id
 }
 
 resource "aws_security_group" "alb_sg" {
@@ -40,7 +33,7 @@ resource "aws_lb" "parth_alb" {
   name               = "parth-strapi-alb"
   internal           = false
   load_balancer_type = "application"
-  subnets            = data.aws_subnets.default.ids
+  subnets            = data.aws_subnet_ids.default.ids
   security_groups    = [aws_security_group.alb_sg.id]
 }
 
@@ -83,18 +76,14 @@ resource "aws_ecs_task_definition" "parth_task" {
   memory                   = "1024"
   execution_role_arn       = "arn:aws:iam::607700977843:role/ecs-task-execution-role"
 
-  container_definitions = jsonencode([
-    {
-      name      = "parth-strapi"
-      image     = var.ecr_image_url
-      portMappings = [
-        {
-          containerPort = 1337
-          protocol      = "tcp"
-        }
-      ]
-    }
-  ])
+  container_definitions = jsonencode([{
+    name      = "parth-strapi"
+    image     = var.ecr_image_url
+    portMappings = [{
+      containerPort = 1337
+      protocol      = "tcp"
+    }]
+  }])
 }
 
 resource "aws_ecs_service" "parth_service" {
@@ -105,8 +94,8 @@ resource "aws_ecs_service" "parth_service" {
   desired_count   = 1
 
   network_configuration {
-    subnets         = data.aws_subnets.default.ids
-    security_groups = [aws_security_group.alb_sg.id]
+    subnets          = data.aws_subnet_ids.default.ids
+    security_groups  = [aws_security_group.alb_sg.id]
     assign_public_ip = true
   }
 
