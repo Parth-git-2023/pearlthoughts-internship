@@ -12,4 +12,4 @@ WORKDIR /app
 COPY --from=builder /app /app
 RUN npm install --production
 EXPOSE 1337
-CMD ["npm", "run", "start"]                                                                                                                                   This is the Dockerfile i use is it ok and you can make changes but let it be much lighter image of starpi-app
+CMD ["npm", "run", "start"] 
