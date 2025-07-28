@@ -22,23 +22,22 @@ data "aws_subnet" "each" {
 }
 
 locals {
-  # Pair AZ with subnet ID
+  # Step 1: Create a list of subnet-AZ pairs
   az_subnet_pairs = [
-    for s in data.aws_subnet.each :
-    {
+    for s in data.aws_subnet.each : {
       az = s.availability_zone
       id = s.id
     }
   ]
 
-  # Group by AZ and take the first subnet per AZ
+  # Step 2: Create a map with AZ as key and first subnet ID in that AZ
   distinct_subnets_by_az = {
-    for pair in local.az_subnet_pairs : 
-    pair.az => pair.id...
+    for pair in local.az_subnet_pairs : pair.az => pair.id
+    if !(contains(keys({for p in local.az_subnet_pairs : p.az => p.id}), pair.az))
   }
 
-  # Take only 2 subnets from different AZs
-  distinct_subnets = slice(local.distinct_subnets_by_az, 0, 2)
+  # Step 3: Convert to list and take first 2 distinct subnets
+  distinct_subnets = slice(values(local.distinct_subnets_by_az), 0, 2)
 }
 
 # ALB Security Group
