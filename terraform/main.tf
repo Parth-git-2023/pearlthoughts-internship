@@ -7,20 +7,31 @@ data "aws_vpc" "default" {
   default = true
 }
 
-# Get all subnets in default VPC
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
-  }
+# Get all subnet IDs in default VPC
+data "aws_subnet_ids" "default" {
+  vpc_id = data.aws_vpc.default.id
 }
 
-# Choose 2 unique subnets in different AZs
+# Fetch subnet details (main fix starts here)
+data "aws_subnet" "each" {
+  for_each = toset(data.aws_subnet_ids.default.ids)
+  id       = each.value
+}
+
 locals {
-  distinct_subnets = slice(distinct(data.aws_subnets.default.ids), 0, 2)
+  # Map AZ => Subnet ID
+  az_subnet_map = {
+    for s in data.aws_subnet.each :
+    s.value.availability_zone => s.value.id
+  }
+
+  fallback_subnets = values(local.az_subnet_map)
+
+  # Select 2 subnets from different AZs if possible
+  distinct_subnets = length(local.fallback_subnets) >= 2 ? slice(local.fallback_subnets, 0, 2) : local.fallback_subnets
 }
 
-# ALB Security Group (allows internet traffic on port 80)
+# ALB Security Group
 resource "aws_security_group" "alb_sg" {
   name   = "parth-alb-sg"
   vpc_id = data.aws_vpc.default.id
@@ -40,7 +51,7 @@ resource "aws_security_group" "alb_sg" {
   }
 }
 
-# ECS Task Security Group (allows traffic from ALB on 1337)
+# ECS Task Security Group
 resource "aws_security_group" "ecs_service_sg" {
   name   = "parth-ecs-strapi-sg"
   vpc_id = data.aws_vpc.default.id
@@ -112,7 +123,7 @@ resource "aws_ecs_cluster" "parth_cluster" {
   name = "parth-strapi-cluster"
 }
 
-# ECS Task Definition with CloudWatch Logs
+# ECS Task Definition
 resource "aws_ecs_task_definition" "parth_task" {
   family                   = "parth-strapi-task"
   network_mode             = "awsvpc"
@@ -195,7 +206,7 @@ resource "aws_cloudwatch_metric_alarm" "high_memory" {
   }
 }
 
-# Optional CloudWatch Dashboard
+# CloudWatch Dashboard
 resource "aws_cloudwatch_dashboard" "strapi_dashboard" {
   dashboard_name = "strapi-dashboard"
   dashboard_body = jsonencode({
