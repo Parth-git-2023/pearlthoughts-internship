@@ -2,7 +2,7 @@ provider "aws" {
   region = "us-east-2"
 }
 
-# Get default VPC
+# Get the default VPC
 data "aws_vpc" "default" {
   default = true
 }
@@ -15,29 +15,56 @@ data "aws_subnets" "default" {
   }
 }
 
-# Get details of each subnet
+# Get subnet details to fetch AZ info
 data "aws_subnet" "each" {
   for_each = toset(data.aws_subnets.default.ids)
   id       = each.value
 }
 
+# Pick first 2 subnets from different AZs
 locals {
-  # Step 1: Create a list of subnet-AZ pairs
-  az_subnet_pairs = [
-    for s in data.aws_subnet.each : {
-      az = s.availability_zone
-      id = s.id
+  az_subnet_map = { for s in data.aws_subnet.each : s.availability_zone => s.id... }
+  distinct_subnets = slice(values(local.az_subnet_map), 0, 2)
+}
+
+# Create CloudWatch log group
+resource "aws_cloudwatch_log_group" "strapi_logs" {
+  name              = "/ecs/strapi-parth-logs"
+  retention_in_days = 7
+}
+
+# ECS Cluster
+resource "aws_ecs_cluster" "parth_cluster" {
+  name = "parth-strapi-cluster"
+}
+
+# Task Definition
+resource "aws_ecs_task_definition" "parth_task" {
+  family                   = "parth-strapi-task"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "512"
+  memory                   = "1024"
+  execution_role_arn       = "arn:aws:iam::607700977843:role/ecs-task-execution-role"
+
+  container_definitions = jsonencode([
+    {
+      name      = "strapi"
+      image     = var.ecr_image_url
+      portMappings = [{
+        containerPort = 1337
+        protocol      = "tcp"
+      }]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.strapi_logs.name
+          awslogs-region        = "us-east-2"
+          awslogs-stream-prefix = "strapi"
+        }
+      }
     }
-  ]
-
-  # Step 2: Create a map with AZ as key and first subnet ID in that AZ
-  distinct_subnets_by_az = {
-    for pair in local.az_subnet_pairs : pair.az => pair.id
-    if !(contains(keys({for p in local.az_subnet_pairs : p.az => p.id}), pair.az))
-  }
-
-  # Step 3: Convert to list and take first 2 distinct subnets
-  distinct_subnets = slice(values(local.distinct_subnets_by_az), 0, 2)
+  ])
 }
 
 # ALB Security Group
@@ -60,9 +87,9 @@ resource "aws_security_group" "alb_sg" {
   }
 }
 
-# ECS Task Security Group
+# ECS Service Security Group
 resource "aws_security_group" "ecs_service_sg" {
-  name   = "parth-ecs-strapi-sg"
+  name   = "parth-ecs-service-sg"
   vpc_id = data.aws_vpc.default.id
 
   ingress {
@@ -78,16 +105,6 @@ resource "aws_security_group" "ecs_service_sg" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
-  tags = {
-    Name = "ecs-strapi-sg"
-  }
-}
-
-# CloudWatch Log Group
-resource "aws_cloudwatch_log_group" "strapi_logs" {
-  name              = "/ecs/strapi-parth-logs"
-  retention_in_days = 7
 }
 
 # ALB
@@ -99,23 +116,24 @@ resource "aws_lb" "parth_alb" {
   security_groups    = [aws_security_group.alb_sg.id]
 }
 
+# Target Group
 resource "aws_lb_target_group" "parth_tg" {
   name        = "parth-strapi-tg"
   port        = 1337
   protocol    = "HTTP"
-  vpc_id      = data.aws_vpc.default.id
   target_type = "ip"
-
+  vpc_id      = data.aws_vpc.default.id
   health_check {
     path                = "/"
     interval            = 30
     timeout             = 5
     healthy_threshold   = 2
     unhealthy_threshold = 2
-    matcher             = "200"
+    matcher             = "200-399"
   }
 }
 
+# Listener
 resource "aws_lb_listener" "parth_listener" {
   load_balancer_arn = aws_lb.parth_alb.arn
   port              = 80
@@ -127,38 +145,6 @@ resource "aws_lb_listener" "parth_listener" {
   }
 }
 
-# ECS Cluster
-resource "aws_ecs_cluster" "parth_cluster" {
-  name = "parth-strapi-cluster"
-}
-
-# ECS Task Definition
-resource "aws_ecs_task_definition" "parth_task" {
-  family                   = "parth-strapi-task"
-  network_mode             = "awsvpc"
-  requires_compatibilities = ["FARGATE"]
-  cpu                      = "512"
-  memory                   = "1024"
-  execution_role_arn       = "arn:aws:iam::607700977843:role/ecs-task-execution-role"
-
-  container_definitions = jsonencode([{
-    name      = "parth-strapi"
-    image     = var.ecr_image_url
-    portMappings = [{
-      containerPort = 1337
-      protocol      = "tcp"
-    }],
-    logConfiguration = {
-      logDriver = "awslogs",
-      options = {
-        awslogs-group         = "/ecs/strapi-parth-logs",
-        awslogs-region        = "us-east-2",
-        awslogs-stream-prefix = "ecs/strapi"
-      }
-    }
-  }])
-}
-
 # ECS Service
 resource "aws_ecs_service" "parth_service" {
   name            = "parth-strapi-service"
@@ -168,75 +154,21 @@ resource "aws_ecs_service" "parth_service" {
   desired_count   = 1
 
   network_configuration {
-    subnets          = local.distinct_subnets
-    security_groups  = [aws_security_group.ecs_service_sg.id]
+    subnets         = local.distinct_subnets
+    security_groups = [aws_security_group.ecs_service_sg.id]
     assign_public_ip = true
   }
 
   load_balancer {
     target_group_arn = aws_lb_target_group.parth_tg.arn
-    container_name   = "parth-strapi"
+    container_name   = "strapi"
     container_port   = 1337
   }
 
   depends_on = [aws_lb_listener.parth_listener]
 }
 
-# CloudWatch Alarms
-resource "aws_cloudwatch_metric_alarm" "high_cpu" {
-  alarm_name          = "high-cpu-strapi"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = 2
-  metric_name         = "CPUUtilization"
-  namespace           = "AWS/ECS"
-  period              = 60
-  statistic           = "Average"
-  threshold           = 80
-  alarm_description   = "Alarm when ECS CPU > 80%"
-  dimensions = {
-    ClusterName = aws_ecs_cluster.parth_cluster.name
-    ServiceName = aws_ecs_service.parth_service.name
-  }
-}
-
-resource "aws_cloudwatch_metric_alarm" "high_memory" {
-  alarm_name          = "high-memory-strapi"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = 2
-  metric_name         = "MemoryUtilization"
-  namespace           = "AWS/ECS"
-  period              = 60
-  statistic           = "Average"
-  threshold           = 80
-  alarm_description   = "Alarm when ECS Memory > 80%"
-  dimensions = {
-    ClusterName = aws_ecs_cluster.parth_cluster.name
-    ServiceName = aws_ecs_service.parth_service.name
-  }
-}
-
-# CloudWatch Dashboard
-resource "aws_cloudwatch_dashboard" "strapi_dashboard" {
-  dashboard_name = "strapi-dashboard"
-  dashboard_body = jsonencode({
-    widgets = [
-      {
-        type = "metric",
-        x = 0,
-        y = 0,
-        width = 12,
-        height = 6,
-        properties = {
-          metrics = [
-            [ "AWS/ECS", "CPUUtilization", "ClusterName", aws_ecs_cluster.parth_cluster.name, "ServiceName", aws_ecs_service.parth_service.name ],
-            [ ".", "MemoryUtilization", ".", ".", ".", "." ]
-          ],
-          view   = "timeSeries",
-          stacked = false,
-          region = "us-east-2",
-          title  = "Strapi ECS Metrics"
-        }
-      }
-    ]
-  })
+# Output
+output "alb_dns_name" {
+  value = aws_lb.parth_alb.dns_name
 }
