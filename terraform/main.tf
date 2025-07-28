@@ -2,12 +2,12 @@ provider "aws" {
   region = "us-east-2"
 }
 
-# Get the default VPC
+# Get default VPC
 data "aws_vpc" "default" {
   default = true
 }
 
-# Get all subnets in the default VPC
+# Get all subnets in default VPC
 data "aws_subnets" "default" {
   filter {
     name   = "vpc-id"
@@ -15,19 +15,25 @@ data "aws_subnets" "default" {
   }
 }
 
-# Get subnet details to fetch AZ info
+# Get AZ and ID for each subnet
 data "aws_subnet" "each" {
   for_each = toset(data.aws_subnets.default.ids)
   id       = each.value
 }
 
-# Pick first 2 subnets from different AZs
 locals {
-  az_subnet_map = { for s in data.aws_subnet.each : s.availability_zone => s.id... }
+  # Map: AZ => 1st subnet in that AZ (no ellipsis '...')
+  az_subnet_map = {
+    for s in data.aws_subnet.each :
+    s.availability_zone => s.id
+    if !contains(keys({ for t in data.aws_subnet.each : t.availability_zone => true }), s.availability_zone)
+  }
+
+  # Take first 2 subnets from different AZs
   distinct_subnets = slice(values(local.az_subnet_map), 0, 2)
 }
 
-# Create CloudWatch log group
+# CloudWatch logs
 resource "aws_cloudwatch_log_group" "strapi_logs" {
   name              = "/ecs/strapi-parth-logs"
   retention_in_days = 7
@@ -38,7 +44,7 @@ resource "aws_ecs_cluster" "parth_cluster" {
   name = "parth-strapi-cluster"
 }
 
-# Task Definition
+# ECS Task Definition
 resource "aws_ecs_task_definition" "parth_task" {
   family                   = "parth-strapi-task"
   requires_compatibilities = ["FARGATE"]
@@ -67,7 +73,7 @@ resource "aws_ecs_task_definition" "parth_task" {
   ])
 }
 
-# ALB Security Group
+# Security Group for ALB
 resource "aws_security_group" "alb_sg" {
   name   = "parth-alb-sg"
   vpc_id = data.aws_vpc.default.id
@@ -87,7 +93,7 @@ resource "aws_security_group" "alb_sg" {
   }
 }
 
-# ECS Service Security Group
+# Security Group for ECS service
 resource "aws_security_group" "ecs_service_sg" {
   name   = "parth-ecs-service-sg"
   vpc_id = data.aws_vpc.default.id
@@ -123,6 +129,7 @@ resource "aws_lb_target_group" "parth_tg" {
   protocol    = "HTTP"
   target_type = "ip"
   vpc_id      = data.aws_vpc.default.id
+
   health_check {
     path                = "/"
     interval            = 30
@@ -145,7 +152,7 @@ resource "aws_lb_listener" "parth_listener" {
   }
 }
 
-# ECS Service
+# ECS Fargate Service
 resource "aws_ecs_service" "parth_service" {
   name            = "parth-strapi-service"
   cluster         = aws_ecs_cluster.parth_cluster.id
@@ -168,7 +175,7 @@ resource "aws_ecs_service" "parth_service" {
   depends_on = [aws_lb_listener.parth_listener]
 }
 
-# Output
+# Output ALB DNS
 output "alb_dns_name" {
   value = aws_lb.parth_alb.dns_name
 }
