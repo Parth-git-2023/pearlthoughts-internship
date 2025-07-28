@@ -34,7 +34,7 @@ resource "aws_ecs_task_definition" "parth_task" {
   network_mode             = "awsvpc"
   cpu                      = "512"
   memory                   = "1024"
-  execution_role_arn       = "arn:aws:iam::607700977843:role/ecs-task-execution-role"
+  execution_role_arn       = "arn:aws:iam::607700977843:role/ecs-task-execution-role-p"
 
   container_definitions = jsonencode([{
     name      = "strapi"
