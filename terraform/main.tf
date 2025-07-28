@@ -22,16 +22,13 @@ data "aws_subnet" "each" {
 }
 
 locals {
-  # Map AZ => Subnet ID
   az_subnet_map = {
     for s in data.aws_subnet.each :
     s.value.availability_zone => s.value.id
   }
 
-  fallback_subnets = values(local.az_subnet_map)
-
-  # Select 2 subnets from different AZs if possible
-  distinct_subnets = length(local.fallback_subnets) >= 2 ? slice(local.fallback_subnets, 0, 2) : local.fallback_subnets
+  fallback_subnets  = values(local.az_subnet_map)
+  distinct_subnets  = length(local.fallback_subnets) >= 2 ? slice(local.fallback_subnets, 0, 2) : local.fallback_subnets
 }
 
 # ALB Security Group
