@@ -15,20 +15,30 @@ data "aws_subnets" "default" {
   }
 }
 
-# Fetch subnet details (main fix starts here)
+# Get details of each subnet
 data "aws_subnet" "each" {
   for_each = toset(data.aws_subnets.default.ids)
   id       = each.value
 }
 
 locals {
-  az_subnet_map = {
+  # Pair AZ with subnet ID
+  az_subnet_pairs = [
     for s in data.aws_subnet.each :
-    s.availability_zone => s.id...
+    {
+      az = s.availability_zone
+      id = s.id
+    }
+  ]
+
+  # Group by AZ and take the first subnet per AZ
+  distinct_subnets_by_az = {
+    for pair in local.az_subnet_pairs : 
+    pair.az => pair.id...
   }
 
-  fallback_subnets = flatten(values(local.az_subnet_map))
-  distinct_subnets = length(local.fallback_subnets) >= 2 ? slice(local.fallback_subnets, 0, 2) : local.fallback_subnets
+  # Take only 2 subnets from different AZs
+  distinct_subnets = slice(local.distinct_subnets_by_az, 0, 2)
 }
 
 # ALB Security Group
