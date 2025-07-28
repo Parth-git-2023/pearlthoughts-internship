@@ -24,7 +24,7 @@ data "aws_subnet" "each" {
 locals {
   az_subnet_map = {
     for s in data.aws_subnet.each :
-    s.value.availability_zone => s.value.id
+    s.availability_zone => s.id
   }
 
   fallback_subnets  = values(local.az_subnet_map)
