@@ -7,30 +7,13 @@ data "aws_vpc" "default" {
   default = true
 }
 
-# Get all subnets in default VPC
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
-  }
+# Get 2 subnets from default VPC manually (safer)
+data "aws_subnet" "subnet1" {
+  id = "subnet-0906c244cfe901a9a"  # Replace with subnet in us-east-2a
 }
 
-# Get AZ and ID for each subnet
-data "aws_subnet" "each" {
-  for_each = toset(data.aws_subnets.default.ids)
-  id       = each.value
-}
-
-locals {
-  # Map: AZ => 1st subnet in that AZ (no ellipsis '...')
-  az_subnet_map = {
-    for s in data.aws_subnet.each :
-    s.availability_zone => s.id
-    if !contains(keys({ for t in data.aws_subnet.each : t.availability_zone => true }), s.availability_zone)
-  }
-
-  # Take first 2 subnets from different AZs
-  distinct_subnets = slice(values(local.az_subnet_map), 0, 2)
+data "aws_subnet" "subnet2" {
+  id = "subnet-0cc813dd4d76bf797"  # Replace with subnet in us-east-2b
 }
 
 # CloudWatch logs
@@ -53,27 +36,25 @@ resource "aws_ecs_task_definition" "parth_task" {
   memory                   = "1024"
   execution_role_arn       = "arn:aws:iam::607700977843:role/ecs-task-execution-role"
 
-  container_definitions = jsonencode([
-    {
-      name      = "strapi"
-      image     = var.ecr_image_url
-      portMappings = [{
-        containerPort = 1337
-        protocol      = "tcp"
-      }]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          awslogs-group         = aws_cloudwatch_log_group.strapi_logs.name
-          awslogs-region        = "us-east-2"
-          awslogs-stream-prefix = "strapi"
-        }
+  container_definitions = jsonencode([{
+    name      = "strapi"
+    image     = var.ecr_image_url
+    portMappings = [{
+      containerPort = 1337
+      protocol      = "tcp"
+    }]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.strapi_logs.name
+        awslogs-region        = "us-east-2"
+        awslogs-stream-prefix = "strapi"
       }
     }
-  ])
+  }])
 }
 
-# Security Group for ALB
+# ALB Security Group
 resource "aws_security_group" "alb_sg" {
   name   = "parth-alb-sg"
   vpc_id = data.aws_vpc.default.id
@@ -93,7 +74,7 @@ resource "aws_security_group" "alb_sg" {
   }
 }
 
-# Security Group for ECS service
+# ECS Service Security Group
 resource "aws_security_group" "ecs_service_sg" {
   name   = "parth-ecs-service-sg"
   vpc_id = data.aws_vpc.default.id
@@ -118,7 +99,7 @@ resource "aws_lb" "parth_alb" {
   name               = "parth-strapi-alb"
   internal           = false
   load_balancer_type = "application"
-  subnets            = local.distinct_subnets
+  subnets            = [data.aws_subnet.subnet1.id, data.aws_subnet.subnet2.id]
   security_groups    = [aws_security_group.alb_sg.id]
 }
 
@@ -152,7 +133,7 @@ resource "aws_lb_listener" "parth_listener" {
   }
 }
 
-# ECS Fargate Service
+# ECS Service
 resource "aws_ecs_service" "parth_service" {
   name            = "parth-strapi-service"
   cluster         = aws_ecs_cluster.parth_cluster.id
@@ -161,7 +142,7 @@ resource "aws_ecs_service" "parth_service" {
   desired_count   = 1
 
   network_configuration {
-    subnets         = local.distinct_subnets
+    subnets         = [data.aws_subnet.subnet1.id, data.aws_subnet.subnet2.id]
     security_groups = [aws_security_group.ecs_service_sg.id]
     assign_public_ip = true
   }
@@ -175,7 +156,6 @@ resource "aws_ecs_service" "parth_service" {
   depends_on = [aws_lb_listener.parth_listener]
 }
 
-# Output ALB DNS
 output "alb_dns_name" {
   value = aws_lb.parth_alb.dns_name
 }
