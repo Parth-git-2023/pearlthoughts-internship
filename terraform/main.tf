@@ -7,14 +7,17 @@ data "aws_vpc" "default" {
   default = true
 }
 
-# Get all subnet IDs in default VPC
-data "aws_subnet_ids" "default" {
-  vpc_id = data.aws_vpc.default.id
+# Get all subnets in the default VPC
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
 }
 
 # Fetch subnet details (main fix starts here)
 data "aws_subnet" "each" {
-  for_each = toset(data.aws_subnet_ids.default.ids)
+  for_each = toset(data.aws_subnets.default.ids)
   id       = each.value
 }
 
