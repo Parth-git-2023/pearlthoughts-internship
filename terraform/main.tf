@@ -64,6 +64,13 @@ resource "aws_security_group" "ecs_service_sg" {
   }
 }
 
+# CloudWatch Log Group
+resource "aws_cloudwatch_log_group" "strapi_logs" {
+  name              = "/ecs/strapi-parth-logs"
+  retention_in_days = 7
+}
+
+# ALB
 resource "aws_lb" "parth_alb" {
   name               = "parth-strapi-alb"
   internal           = false
@@ -100,10 +107,12 @@ resource "aws_lb_listener" "parth_listener" {
   }
 }
 
+# ECS Cluster
 resource "aws_ecs_cluster" "parth_cluster" {
   name = "parth-strapi-cluster"
 }
 
+# ECS Task Definition with CloudWatch Logs
 resource "aws_ecs_task_definition" "parth_task" {
   family                   = "parth-strapi-task"
   network_mode             = "awsvpc"
@@ -118,10 +127,19 @@ resource "aws_ecs_task_definition" "parth_task" {
     portMappings = [{
       containerPort = 1337
       protocol      = "tcp"
-    }]
+    }],
+    logConfiguration = {
+      logDriver = "awslogs",
+      options = {
+        awslogs-group         = "/ecs/strapi-parth-logs",
+        awslogs-region        = "us-east-2",
+        awslogs-stream-prefix = "ecs/strapi"
+      }
+    }
   }])
 }
 
+# ECS Service
 resource "aws_ecs_service" "parth_service" {
   name            = "parth-strapi-service"
   cluster         = aws_ecs_cluster.parth_cluster.id
@@ -131,7 +149,7 @@ resource "aws_ecs_service" "parth_service" {
 
   network_configuration {
     subnets          = local.distinct_subnets
-    security_groups  = [aws_security_group.ecs_service_sg.id] # ✅ fixed
+    security_groups  = [aws_security_group.ecs_service_sg.id]
     assign_public_ip = true
   }
 
@@ -142,4 +160,63 @@ resource "aws_ecs_service" "parth_service" {
   }
 
   depends_on = [aws_lb_listener.parth_listener]
+}
+
+# CloudWatch Alarms
+resource "aws_cloudwatch_metric_alarm" "high_cpu" {
+  alarm_name          = "high-cpu-strapi"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/ECS"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 80
+  alarm_description   = "Alarm when ECS CPU > 80%"
+  dimensions = {
+    ClusterName = aws_ecs_cluster.parth_cluster.name
+    ServiceName = aws_ecs_service.parth_service.name
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "high_memory" {
+  alarm_name          = "high-memory-strapi"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "MemoryUtilization"
+  namespace           = "AWS/ECS"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 80
+  alarm_description   = "Alarm when ECS Memory > 80%"
+  dimensions = {
+    ClusterName = aws_ecs_cluster.parth_cluster.name
+    ServiceName = aws_ecs_service.parth_service.name
+  }
+}
+
+# Optional CloudWatch Dashboard
+resource "aws_cloudwatch_dashboard" "strapi_dashboard" {
+  dashboard_name = "strapi-dashboard"
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type = "metric",
+        x = 0,
+        y = 0,
+        width = 12,
+        height = 6,
+        properties = {
+          metrics = [
+            [ "AWS/ECS", "CPUUtilization", "ClusterName", aws_ecs_cluster.parth_cluster.name, "ServiceName", aws_ecs_service.parth_service.name ],
+            [ ".", "MemoryUtilization", ".", ".", ".", "." ]
+          ],
+          view   = "timeSeries",
+          stacked = false,
+          region = "us-east-2",
+          title  = "Strapi ECS Metrics"
+        }
+      }
+    ]
+  })
 }
