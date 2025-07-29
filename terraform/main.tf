@@ -7,13 +7,13 @@ data "aws_vpc" "default" {
   default = true
 }
 
-# Get 2 subnets from default VPC manually (safer)
+# 2 subnets from default VPC manually
 data "aws_subnet" "subnet1" {
-  id = "subnet-0906c244cfe901a9a"  # Replace with subnet in us-east-2a
+  id = "subnet-0906c244cfe901a9a"  # subnet in us-east-2a
 }
 
 data "aws_subnet" "subnet2" {
-  id = "subnet-0cc813dd4d76bf797"  # Replace with subnet in us-east-2b
+  id = "subnet-0cc813dd4d76bf797"  # subnet in us-east-2b
 }
 
 # CloudWatch logs
@@ -138,8 +138,12 @@ resource "aws_ecs_service" "parth_service" {
   name            = "parth-strapi-service"
   cluster         = aws_ecs_cluster.parth_cluster.id
   task_definition = aws_ecs_task_definition.parth_task.arn
-  launch_type     = "FARGATE"
   desired_count   = 1
+
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 1
+  }
 
   network_configuration {
     subnets         = [data.aws_subnet.subnet1.id, data.aws_subnet.subnet2.id]
