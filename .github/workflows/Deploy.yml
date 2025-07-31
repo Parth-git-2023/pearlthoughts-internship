@@ -59,29 +59,21 @@ jobs:
       working-directory: terraform
       run: terraform apply -auto-approve -var="ecr_image_url=${{ env.image }}"
 
-    - name: Create Task Definition File
+    - name: Get Task Definition ARN
+      id: get-task-def
       run: |
-        aws ecs describe-task-definition --task-definition $TASK_FAMILY \
-          --query "taskDefinition" --output json > taskdef.json
+        TASK_DEF_ARN=$(aws ecs describe-task-definition --task-definition $TASK_FAMILY --query "taskDefinition.taskDefinitionArn" --output text)
+        echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
+        echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
 
-    - name: Inject Task Definition ARN
+    - name: Replace TaskDefinition in AppSpec
       run: |
-        TASK_DEF_ARN=$(jq -r .taskDefinitionArn taskdef.json)
-        sed -i "s|{{TASK_DEFINITION}}|$TASK_DEF_ARN|g" appspec.yaml
+        sed "s|{{TASK_DEFINITION}}|${{ steps.get-task-def.outputs.task_def_arn }}|" appspec.yaml > final-appspec.yaml
 
-    - name: Create CodeDeploy Deployment
+    - name: Create Deployment
       run: |
-        TASK_DEF_ARN=$(jq -r .taskDefinitionArn taskdef.json)
-        BASE64_APPSPEC=$(cat appspec.yaml | sed "s|{{TASK_DEFINITION}}|$TASK_DEF_ARN|g" | base64 | tr -d '\n')
-
         aws deploy create-deployment \
           --application-name $CODEDEPLOY_APP \
           --deployment-group-name $CODEDEPLOY_GROUP \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
-          --revision "{
-            \"revisionType\": \"AppSpecContent\",
-            \"appSpecContent\": {
-              \"content\": \"$BASE64_APPSPEC\"
-            }
-          }"
-
+          --revision file://final-appspec.yaml
