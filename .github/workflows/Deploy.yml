@@ -70,18 +70,4 @@ jobs:
           --application-name $CODEDEPLOY_APP \
           --deployment-group-name $CODEDEPLOY_GROUP \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
-          --revision file://revision.json
-
-    - name: Generate Revision JSON
-      run: |
-        echo '{
-          "revisionType": "AppSpecContent",
-          "appSpecContent": {
-            "content": "'"$(base64 -w 0 appspec.yaml)"'",
-            "sha256": ""
-          },
-          "taskDefinition": {
-            "content": "'"$(base64 -w 0 taskdef.json)"'",
-            "sha256": ""
-          }
-        }' > revision.json
+          --revision appSpecContent="{\"content\":\"$APPSPEC_CONTENT\"}"
