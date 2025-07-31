@@ -19,8 +19,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -35,7 +34,6 @@ jobs:
         aws ecr create-repository --repository-name $ECR_REPO
 
     - name: Login to Amazon ECR
-      id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
     - name: Build & Push Docker image
@@ -45,34 +43,39 @@ jobs:
         ECR_URI=${{ env.ECR_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}
         docker build -t $ECR_URI:$IMAGE_TAG .
         docker push $ECR_URI:$IMAGE_TAG
-        echo "image=$ECR_URI:$IMAGE_TAG" >> $GITHUB_ENV
+        echo "IMAGE_URI=$ECR_URI:$IMAGE_TAG" >> $GITHUB_ENV
 
     - name: Install Terraform
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.6.6
 
-    - name: Terraform Init
-      working-directory: terraform
-      run: terraform init
+    - name: Terraform Init & Apply
+      run: |
+        cd terraform
+        terraform init
+        terraform apply -auto-approve -var="ecr_image_url=${{ env.IMAGE_URI }}"
 
-    - name: Terraform Apply
-      working-directory: terraform
-      run: terraform apply -auto-approve -var="ecr_image_url=${{ env.image }}"
-
-    - name: Generate Base64 AppSpec & Task Definition
+    - name: Encode base64 artifacts
       run: |
         APP_SPEC_CONTENT=$(base64 appspec.yaml | tr -d '\n')
-        TASK_DEF_FILE=$(aws ecs describe-task-definition --task-definition $TASK_FAMILY)
-        TASK_DEF_CONTENT=$(echo "$TASK_DEF_FILE" | jq -c .taskDefinition | base64 | tr -d '\n')
+        TASK_DEF_CONTENT=$(aws ecs describe-task-definition --task-definition $TASK_FAMILY \
+          --query taskDefinition | jq -c . | base64 | tr -d '\n')
         echo "APP_SPEC_CONTENT=$APP_SPEC_CONTENT" >> $GITHUB_ENV
         echo "TASK_DEF_CONTENT=$TASK_DEF_CONTENT" >> $GITHUB_ENV
 
-    - name: Create CodeDeploy Deployment
+    - name: Trigger CodeDeploy
       run: |
         aws deploy create-deployment \
-          --application-name $CODEDEPLOY_APP \
-          --deployment-group-name $CODEDEPLOY_GROUP \
-          --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
-          --revision 'revisionType=AppSpecContent,appSpecContent={"content":"'"$APP_SPEC_CONTENT"'"},taskDefinition={"content":"'"$TASK_DEF_CONTENT"'"}' \
-          --description "Blue/Green Deployment of $image"
+          --cli-input-json '{
+            "applicationName": "'"$CODEDEPLOY_APP"'",
+            "deploymentGroupName": "'"$CODEDEPLOY_GROUP"'",
+            "deploymentConfigName": "CodeDeployDefault.ECSCanary10Percent5Minutes",
+            "revision": {
+              "revisionType": "AppSpecContent",
+              "appSpecContent": { "content": "'"$APP_SPEC_CONTENT"'" },
+              "taskDefinition": { "content": "'"$TASK_DEF_CONTENT"'" }
+            },
+            "description": "Blue/Green deployment for $IMAGE_URI"
+          }'
+

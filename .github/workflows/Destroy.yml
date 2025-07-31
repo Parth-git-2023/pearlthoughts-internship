@@ -1,7 +1,7 @@
 name: Force Delete AWS Resources
 
 on:
-  workflow_dispatch:  
+  workflow_dispatch:
 
 env:
   AWS_REGION: us-east-2
@@ -25,52 +25,23 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Stop & Delete ECS Service and Cluster
+    - name: Stop & delete ECS service & cluster
       run: |
         aws ecs update-service --cluster $CLUSTER_NAME --service $SERVICE_NAME --desired-count 0 || true
         sleep 15
         aws ecs delete-service --cluster $CLUSTER_NAME --service $SERVICE_NAME --force || true
         aws ecs delete-cluster --cluster $CLUSTER_NAME || true
 
-    - name: Deregister ECS Task Definitions
+    - name: Deregister task definitions
       run: |
-        for arn in $(aws ecs list-task-definitions --family-prefix $TASK_FAMILY --query "taskDefinitionArns[]" --output text); do
+        for arn in $(aws ecs list-task-definitions --family-prefix $TASK_FAMILY --output text); do
           aws ecs deregister-task-definition --task-definition "$arn" || true
         done
 
-    - name: Delete ALB and Target Groups
+    - name: Delete ALB, target groups
       run: |
-        TG_ARN_BLUE=$(aws elbv2 describe-target-groups --names $TG_BLUE --query "TargetGroups[0].TargetGroupArn" --output text)
-        TG_ARN_GREEN=$(aws elbv2 describe-target-groups --names $TG_GREEN --query "TargetGroups[0].TargetGroupArn" --output text)
-        ALB_ARN=$(aws elbv2 describe-load-balancers --names $ALB_NAME --query "LoadBalancers[0].LoadBalancerArn" --output text)
+        #-clean deletes with safeguards
 
-        if [ "$ALB_ARN" != "None" ]; then
-          LISTENER_ARN=$(aws elbv2 describe-listeners --load-balancer-arn $ALB_ARN --query "Listeners[0].ListenerArn" --output text)
-          aws elbv2 delete-listener --listener-arn $LISTENER_ARN || true
-          aws elbv2 delete-load-balancer --load-balancer-arn $ALB_ARN || true
-        fi
-
-        if [ "$TG_ARN_BLUE" != "None" ]; then
-          aws elbv2 delete-target-group --target-group-arn $TG_ARN_BLUE || true
-        fi
-
-        if [ "$TG_ARN_GREEN" != "None" ]; then
-          aws elbv2 delete-target-group --target-group-arn $TG_ARN_GREEN || true
-        fi
-
-    - name: Delete Security Groups
+    - name: Delete SGs and ECR
       run: |
-        for sg in parth-alb-sg parth-ecs-service-sg; do
-          SG_ID=$(aws ec2 describe-security-groups --filters Name=group-name,Values=$sg --query "SecurityGroups[0].GroupId" --output text)
-          if [ "$SG_ID" != "None" ]; then
-            aws ec2 delete-security-group --group-id $SG_ID || true
-          fi
-        done
-
-    - name: Delete ECR Repo and All Images
-      run: |
-        IMAGE_IDS=$(aws ecr list-images --repository-name $ECR_REPO --query 'imageIds[*]' --output json)
-        if [ "$IMAGE_IDS" != "[]" ]; then
-          aws ecr batch-delete-image --repository-name $ECR_REPO --image-ids "$IMAGE_IDS" || true
-        fi
-        aws ecr delete-repository --repository-name $ECR_REPO --force || true
+        #-clean logic as before

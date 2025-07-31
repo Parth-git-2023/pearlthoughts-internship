@@ -3,6 +3,7 @@ Resources:
   - TargetService:
       Type: AWS::ECS::Service
       Properties:
+        TaskDefinition: "REPLACED_BY_CODEDEPLOY"
         LoadBalancerInfo:
           ContainerName: strapi
           ContainerPort: 1337
