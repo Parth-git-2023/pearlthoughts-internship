@@ -64,6 +64,11 @@ jobs:
         aws ecs describe-task-definition --task-definition $TASK_FAMILY \
         --query "taskDefinition" --output json > taskdef.json
 
+    - name: Encode AppSpec as base64
+      run: |
+        export APP_SPEC_CONTENT=$(base64 -w 0 appspec.yaml)
+        echo "APP_SPEC_CONTENT=$APP_SPEC_CONTENT" >> $GITHUB_ENV
+
     - name: Create CodeDeploy Deployment
       run: |
         aws deploy create-deployment \
