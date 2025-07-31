@@ -71,8 +71,17 @@ jobs:
 
     - name: Create CodeDeploy Deployment
       run: |
+        TASK_DEF_ARN=$(jq -r .taskDefinitionArn taskdef.json)
+        BASE64_APPSPEC=$(cat appspec.yaml | sed "s|{{TASK_DEFINITION}}|$TASK_DEF_ARN|g" | base64 | tr -d '\n')
+
         aws deploy create-deployment \
           --application-name $CODEDEPLOY_APP \
           --deployment-group-name $CODEDEPLOY_GROUP \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
-          --revision file://appspec.yaml
+          --revision "{
+            \"revisionType\": \"AppSpecContent\",
+            \"appSpecContent\": {
+              \"content\": \"$BASE64_APPSPEC\"
+            }
+          }"
+
