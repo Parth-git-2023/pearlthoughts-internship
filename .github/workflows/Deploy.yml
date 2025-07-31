@@ -75,4 +75,4 @@ jobs:
           --application-name $CODEDEPLOY_APP \
           --deployment-group-name $CODEDEPLOY_GROUP \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
-          --revision appSpecContent="{\"content\":\"$APPSPEC_CONTENT\"}"
+          --revision '{"revisionType":"AppSpecContent","appSpecContent":{"content":"'"$APP_SPEC_CONTENT"'"}}'

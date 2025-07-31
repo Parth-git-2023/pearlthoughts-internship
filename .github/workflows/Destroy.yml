@@ -58,14 +58,20 @@ jobs:
           aws elbv2 delete-target-group --target-group-arn $TG_ARN_GREEN || true
         fi
 
-    - name: Delete Security Groups
+    - name: Wait and Delete ENIs attached to Security Groups
       run: |
         for sg in parth-alb-sg parth-ecs-service-sg; do
           SG_ID=$(aws ec2 describe-security-groups --filters Name=group-name,Values=$sg --query "SecurityGroups[0].GroupId" --output text)
-          if [ "$SG_ID" != "None" ]; then
-            aws ec2 delete-security-group --group-id $SG_ID || true
-          fi
+          echo "Checking ENIs for $SG_ID"
+          ENI_IDS=$(aws ec2 describe-network-interfaces --filters Name=group-id,Values=$SG_ID --query 'NetworkInterfaces[*].NetworkInterfaceId' --output text)
+          for eni in $ENI_IDS; do
+            echo "Deleting ENI: $eni"
+            aws ec2 delete-network-interface --network-interface-id $eni || true
+          done
         done
+
+        echo "Waiting 30s for ENIs to detach..."
+        sleep 30
 
     - name: Delete ECR Repo and All Images
       run: |
