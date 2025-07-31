@@ -59,50 +59,53 @@ jobs:
       working-directory: terraform
       run: terraform apply -auto-approve -var="ecr_image_url=${{ env.IMAGE_URI }}"
 
-    - name: Create taskdef.json
+    - name: Register new Task Definition
+      id: taskdef
       run: |
-        cat > taskdef.json <<EOF
-        {
-          "family": "${{ env.TASK_FAMILY }}",
-          "executionRoleArn": "arn:aws:iam::${{ env.ECR_ACCOUNT }}:role/ecs-task-execution-role-p",
-          "networkMode": "awsvpc",
-          "containerDefinitions": [
+        NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+          --family $TASK_FAMILY \
+          --requires-compatibilities FARGATE \
+          --cpu 512 --memory 1024 \
+          --network-mode awsvpc \
+          --execution-role-arn arn:aws:iam::$ECR_ACCOUNT:role/ecs-task-execution-role-p \
+          --container-definitions "[
             {
-              "name": "strapi",
-              "image": "${{ env.IMAGE_URI }}",
-              "essential": true,
-              "portMappings": [
+              \"name\": \"strapi\",
+              \"image\": \"${IMAGE_URI}\",
+              \"essential\": true,
+              \"portMappings\": [
                 {
-                  "containerPort": 1337,
-                  "protocol": "tcp"
+                  \"containerPort\": 1337,
+                  \"protocol\": \"tcp\"
                 }
               ]
             }
-          ],
-          "requiresCompatibilities": ["FARGATE"],
-          "cpu": "512",
-          "memory": "1024"
-        }
+          ]" \
+          --query 'taskDefinition.taskDefinitionArn' \
+          --output text)
+
+        echo "NEW_TASK_DEF_ARN=$NEW_TASK_DEF_ARN" >> $GITHUB_ENV
+
+    - name: Prepare AppSpec YAML
+      run: |
+        cat > appspec.yaml <<EOF
+        version: 1
+        Resources:
+          - TargetService:
+              Type: AWS::ECS::Service
+              Properties:
+                TaskDefinition: "$NEW_TASK_DEF_ARN"
+                LoadBalancerInfo:
+                  ContainerName: "strapi"
+                  ContainerPort: 1337
         EOF
 
     - name: Deploy to ECS via CodeDeploy
       run: |
-        jq -n \
-          --arg appspec "$(cat appspec.yaml | sed 's/"/\\"/g' | tr -d '\n')" \
-          --arg taskdef "$(cat taskdef.json | sed 's/"/\\"/g' | tr -d '\n')" \
-          '{
-            revisionType: "AppSpecContent",
-            appSpecContent: {
-              content: $appspec
-            },
-            ecsService: {
-              taskDefinition: $taskdef
-            }
-          }' > revision.json
-
+        APPSPEC_CONTENT=$(base64 appspec.yaml | tr -d '\n')
         aws deploy create-deployment \
           --application-name "$CODEDEPLOY_APP" \
           --deployment-group-name "$CODEDEPLOY_GROUP" \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
           --description "Blue/Green Deployment for $IMAGE_URI" \
-          --revision file://revision.json
+          --revision "appSpecContent={\"content\":\"$APPSPEC_CONTENT\"}"

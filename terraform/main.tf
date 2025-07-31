@@ -163,7 +163,7 @@ resource "aws_ecs_service" "parth_service" {
   desired_count   = 1
 
   deployment_controller {
-  type = "CODE_DEPLOY"
+    type = "CODE_DEPLOY"
   }
 
   network_configuration {
