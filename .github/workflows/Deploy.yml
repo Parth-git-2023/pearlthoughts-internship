@@ -35,7 +35,6 @@ jobs:
         aws ecr create-repository --repository-name $ECR_REPO
 
     - name: Login to Amazon ECR
-      id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
     - name: Build & Push Docker image
@@ -65,7 +64,7 @@ jobs:
         cat > taskdef.json <<EOF
         {
           "family": "${{ env.TASK_FAMILY }}",
-          "executionRoleArn": "arn:aws:iam::607700977843:role/ecs-task-execution-role-p",
+          "executionRoleArn": "arn:aws:iam::${{ env.ECR_ACCOUNT }}:role/ecs-task-execution-role-p",
           "networkMode": "awsvpc",
           "containerDefinitions": [
             {
@@ -88,11 +87,22 @@ jobs:
 
     - name: Deploy to ECS via CodeDeploy
       run: |
+        jq -n \
+          --arg appspec "$(cat appspec.yaml | sed 's/"/\\"/g' | tr -d '\n')" \
+          --arg taskdef "$(cat taskdef.json | sed 's/"/\\"/g' | tr -d '\n')" \
+          '{
+            revisionType: "AppSpecContent",
+            appSpecContent: {
+              content: $appspec
+            },
+            ecsService: {
+              taskDefinition: $taskdef
+            }
+          }' > revision.json
+
         aws deploy create-deployment \
-          --application-name $CODEDEPLOY_APP \
-          --deployment-group-name $CODEDEPLOY_GROUP \
+          --application-name "$CODEDEPLOY_APP" \
+          --deployment-group-name "$CODEDEPLOY_GROUP" \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
-          --file-exists-behavior OVERWRITE \
-          --revision file://appspec.yaml \
-          --task-definition file://taskdef.json \
-          --description "Blue/Green Deployment for $IMAGE_URI"
+          --description "Blue/Green Deployment for $IMAGE_URI" \
+          --revision file://revision.json
