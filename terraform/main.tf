@@ -162,6 +162,10 @@ resource "aws_ecs_service" "parth_service" {
   launch_type     = "FARGATE"
   desired_count   = 1
 
+  deployment_controller {
+  type = "CODE_DEPLOY"
+  }
+
   network_configuration {
     subnets         = [data.aws_subnet.subnet1.id, data.aws_subnet.subnet2.id]
     security_groups = [aws_security_group.ecs_service_sg.id]
