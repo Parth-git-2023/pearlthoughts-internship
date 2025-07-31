@@ -35,6 +35,7 @@ jobs:
         aws ecr create-repository --repository-name $ECR_REPO
 
     - name: Login to Amazon ECR
+      id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
     - name: Build & Push Docker image
@@ -59,34 +60,33 @@ jobs:
       working-directory: terraform
       run: terraform apply -auto-approve -var="ecr_image_url=${{ env.IMAGE_URI }}"
 
-    - name: Register new Task Definition
-      id: taskdef
+    - name: Create taskdef.json
       run: |
-        NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
-          --family $TASK_FAMILY \
-          --requires-compatibilities FARGATE \
-          --cpu 512 --memory 1024 \
-          --network-mode awsvpc \
-          --execution-role-arn arn:aws:iam::$ECR_ACCOUNT:role/ecs-task-execution-role-p \
-          --container-definitions "[
+        cat > taskdef.json <<EOF
+        {
+          "family": "${{ env.TASK_FAMILY }}",
+          "executionRoleArn": "arn:aws:iam::607700977843:role/ecs-task-execution-role-p",
+          "networkMode": "awsvpc",
+          "containerDefinitions": [
             {
-              \"name\": \"strapi\",
-              \"image\": \"${IMAGE_URI}\",
-              \"essential\": true,
-              \"portMappings\": [
+              "name": "strapi",
+              "image": "${{ env.IMAGE_URI }}",
+              "essential": true,
+              "portMappings": [
                 {
-                  \"containerPort\": 1337,
-                  \"protocol\": \"tcp\"
+                  "containerPort": 1337,
+                  "protocol": "tcp"
                 }
               ]
             }
-          ]" \
-          --query 'taskDefinition.taskDefinitionArn' \
-          --output text)
+          ],
+          "requiresCompatibilities": ["FARGATE"],
+          "cpu": "512",
+          "memory": "1024"
+        }
+        EOF
 
-        echo "NEW_TASK_DEF_ARN=$NEW_TASK_DEF_ARN" >> $GITHUB_ENV
-
-    - name: Prepare AppSpec YAML
+    - name: Create appspec.yaml
       run: |
         cat > appspec.yaml <<EOF
         version: 1
@@ -94,18 +94,24 @@ jobs:
           - TargetService:
               Type: AWS::ECS::Service
               Properties:
-                TaskDefinition: "$NEW_TASK_DEF_ARN"
+                TaskDefinition: "${{ env.TASK_FAMILY }}"
                 LoadBalancerInfo:
                   ContainerName: "strapi"
                   ContainerPort: 1337
         EOF
 
-    - name: Deploy to ECS via CodeDeploy
+    - name: Encode files
       run: |
-        APPSPEC_CONTENT=$(base64 appspec.yaml | tr -d '\n')
+        export APP_SPEC_CONTENT=$(base64 -w 0 appspec.yaml)
+        export TASK_DEF_CONTENT=$(base64 -w 0 taskdef.json)
+        echo "APP_SPEC_CONTENT=$APP_SPEC_CONTENT" >> $GITHUB_ENV
+        echo "TASK_DEF_CONTENT=$TASK_DEF_CONTENT" >> $GITHUB_ENV
+
+    - name: Create CodeDeploy Deployment
+      run: |
         aws deploy create-deployment \
-          --application-name "$CODEDEPLOY_APP" \
-          --deployment-group-name "$CODEDEPLOY_GROUP" \
+          --application-name $CODEDEPLOY_APP \
+          --deployment-group-name $CODEDEPLOY_GROUP \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
-          --description "Blue/Green Deployment for $IMAGE_URI" \
-          --revision "appSpecContent={\"content\":\"$APPSPEC_CONTENT\"}"
+          --revision "revisionType=AppSpecContent,appSpecContent={\"content\":\"$APP_SPEC_CONTENT\"},taskDefinition={\"content\":\"$TASK_DEF_CONTENT\"}" \
+          --description "Blue/Green Deployment of $IMAGE_URI"
