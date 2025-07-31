@@ -72,7 +72,7 @@ jobs:
 
     - name: Create Revision JSON
       run: |
-        base64 appspec.yaml | tr -d '\n' > appspec.b64
+        base64 final-appspec.yaml | tr -d '\n' > appspec.b64
         aws ecs describe-task-definition --task-definition $TASK_FAMILY \
         --query taskDefinition --output json > taskdef.json
         base64 taskdef.json | tr -d '\n' > taskdef.b64
@@ -92,5 +92,4 @@ jobs:
         aws deploy create-deployment \
           --application-name $CODEDEPLOY_APP \
           --deployment-group-name $CODEDEPLOY_GROUP \
-          --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
           --revision file://revision.json
