@@ -3,7 +3,7 @@ Resources:
   - TargetService:
       Type: AWS::ECS::Service
       Properties:
-        TaskDefinition: REPLACEME
+        TaskDefinition: "{{TASK_DEFINITION}}"
         LoadBalancerInfo:
-          ContainerName: strapi
+          ContainerName: "strapi"
           ContainerPort: 1337
