@@ -70,10 +70,27 @@ jobs:
       run: |
         sed "s|{{TASK_DEFINITION}}|${{ steps.get-task-def.outputs.task_def_arn }}|" appspec.yaml > final-appspec.yaml
 
-    - name: Create Deployment
+    - name: Create Revision JSON
+      run: |
+        base64 appspec.yaml | tr -d '\n' > appspec.b64
+        aws ecs describe-task-definition --task-definition $TASK_FAMILY \
+        --query taskDefinition --output json > taskdef.json
+        base64 taskdef.json | tr -d '\n' > taskdef.b64
+
+        echo '{
+          "revisionType": "AppSpecContent",
+          "appSpecContent": {
+            "content": "'"$(cat appspec.b64)"'"
+          },
+          "taskDefinition": {
+            "content": "'"$(cat taskdef.b64)"'"
+          }
+        }' > revision.json
+
+    - name: Deploy using CodeDeploy
       run: |
         aws deploy create-deployment \
           --application-name $CODEDEPLOY_APP \
           --deployment-group-name $CODEDEPLOY_GROUP \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
-          --revision file://final-appspec.yaml
+          --revision file://revision.json
