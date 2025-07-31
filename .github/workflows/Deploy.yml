@@ -1,4 +1,4 @@
-name: Deploy Strapi to ECS (Blue/Green)
+name: Deploy Strapi to ECS
 
 on:
   push:
@@ -45,7 +45,7 @@ jobs:
         ECR_URI=${{ env.ECR_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}
         docker build -t $ECR_URI:$IMAGE_TAG .
         docker push $ECR_URI:$IMAGE_TAG
-        echo "IMAGE_URI=$ECR_URI:$IMAGE_TAG" >> $GITHUB_ENV
+        echo "image=$ECR_URI:$IMAGE_TAG" >> $GITHUB_ENV
 
     - name: Install Terraform
       uses: hashicorp/setup-terraform@v3
@@ -56,54 +56,15 @@ jobs:
       working-directory: terraform
       run: terraform init
 
-    - name: Terraform Apply with New Image
+    - name: Terraform Apply
       working-directory: terraform
-      run: terraform apply -auto-approve -var="ecr_image_url=${{ env.IMAGE_URI }}"
+      run: terraform apply -auto-approve -var="ecr_image_url=${{ env.image }}"
 
-    - name: Create taskdef.json
+    - name: Generate Base64 AppSpec & Task Definition
       run: |
-        cat > taskdef.json <<EOF
-        {
-          "family": "${{ env.TASK_FAMILY }}",
-          "executionRoleArn": "arn:aws:iam::607700977843:role/ecs-task-execution-role-p",
-          "networkMode": "awsvpc",
-          "containerDefinitions": [
-            {
-              "name": "strapi",
-              "image": "${{ env.IMAGE_URI }}",
-              "essential": true,
-              "portMappings": [
-                {
-                  "containerPort": 1337,
-                  "protocol": "tcp"
-                }
-              ]
-            }
-          ],
-          "requiresCompatibilities": ["FARGATE"],
-          "cpu": "512",
-          "memory": "1024"
-        }
-        EOF
-
-    - name: Create appspec.yaml
-      run: |
-        cat > appspec.yaml <<EOF
-        version: 1
-        Resources:
-          - TargetService:
-              Type: AWS::ECS::Service
-              Properties:
-                TaskDefinition: "${{ env.TASK_FAMILY }}"
-                LoadBalancerInfo:
-                  ContainerName: "strapi"
-                  ContainerPort: 1337
-        EOF
-
-    - name: Encode files
-      run: |
-        export APP_SPEC_CONTENT=$(base64 -w 0 appspec.yaml)
-        export TASK_DEF_CONTENT=$(base64 -w 0 taskdef.json)
+        APP_SPEC_CONTENT=$(base64 appspec.yaml | tr -d '\n')
+        TASK_DEF_FILE=$(aws ecs describe-task-definition --task-definition $TASK_FAMILY)
+        TASK_DEF_CONTENT=$(echo "$TASK_DEF_FILE" | jq -c .taskDefinition | base64 | tr -d '\n')
         echo "APP_SPEC_CONTENT=$APP_SPEC_CONTENT" >> $GITHUB_ENV
         echo "TASK_DEF_CONTENT=$TASK_DEF_CONTENT" >> $GITHUB_ENV
 
@@ -113,5 +74,5 @@ jobs:
           --application-name $CODEDEPLOY_APP \
           --deployment-group-name $CODEDEPLOY_GROUP \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
-          --revision "revisionType=AppSpecContent,appSpecContent={\"content\":\"$APP_SPEC_CONTENT\"},taskDefinition={\"content\":\"$TASK_DEF_CONTENT\"}" \
-          --description "Blue/Green Deployment of $IMAGE_URI"
+          --revision 'revisionType=AppSpecContent,appSpecContent={"content":"'"$APP_SPEC_CONTENT"'"},taskDefinition={"content":"'"$TASK_DEF_CONTENT"'"}' \
+          --description "Blue/Green Deployment of $image"
