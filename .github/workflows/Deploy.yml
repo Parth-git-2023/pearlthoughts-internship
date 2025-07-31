@@ -1,75 +1,87 @@
-name: Deploy to ECS with CodeDeploy
+name: Deploy Strapi to ECS
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
 
 env:
   AWS_REGION: us-east-2
   ECR_REPO: parth-strapi-ecr
+  ECR_ACCOUNT: 607700977843
   ECS_CLUSTER: parth-strapi-cluster
   ECS_SERVICE: parth-strapi-service
+  TASK_FAMILY: parth-strapi-task
   CODEDEPLOY_APP: parth-strapi-codedeploy-app
-  CODEDEPLOY_DG: parth-strapi-dg
+  CODEDEPLOY_GROUP: parth-strapi-dg
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::607700977843:role/github-actions-role-p
-          aws-region: ${{ env.AWS_REGION }}
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
+    - name: Ensure ECR Repo Exists
+      run: |
+        aws ecr describe-repositories --repository-names $ECR_REPO || \
+        aws ecr create-repository --repository-name $ECR_REPO
 
-      - name: Build and Push Docker image
-        run: |
-          IMAGE_TAG=latest
-          ECR_URL=607700977843.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}
-          docker build -t $ECR_URL:$IMAGE_TAG .
-          docker push $ECR_URL:$IMAGE_TAG
-          echo "IMAGE=$ECR_URL:$IMAGE_TAG" >> $GITHUB_ENV
+    - name: Login to Amazon ECR
+      uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Register new ECS Task Definition revision
-        id: register-task
-        run: |
-          FAMILY="parth-strapi-task"
-          TASK_DEF=$(aws ecs describe-task-definition --task-definition $FAMILY)
+    - name: Build & Push Docker image
+      run: |
+        TIMESTAMP=$(date +%s)
+        IMAGE_TAG=parth-strapi-$TIMESTAMP
+        ECR_URI=${{ env.ECR_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}
+        docker build -t $ECR_URI:$IMAGE_TAG .
+        docker push $ECR_URI:$IMAGE_TAG
+        echo "image=$ECR_URI:$IMAGE_TAG" >> $GITHUB_ENV
 
-          NEW_DEF=$(echo "$TASK_DEF" | jq --arg IMAGE "$IMAGE" '.taskDefinition |
-            {
-              family: .family,
-              networkMode: .networkMode,
-              containerDefinitions: [.containerDefinitions[0] | .image=$IMAGE],
-              requiresCompatibilities: .requiresCompatibilities,
-              cpu: .cpu,
-              memory: .memory,
-              executionRoleArn: .executionRoleArn
-            }')
+    - name: Install Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.6.6
 
-          echo "$NEW_DEF" > taskdef.json
-          NEW_TASK_ARN=$(aws ecs register-task-definition --cli-input-json file://taskdef.json | jq -r '.taskDefinition.taskDefinitionArn')
-          echo "TASK_DEF_ARN=$NEW_TASK_ARN" >> $GITHUB_ENV
+    - name: Terraform Init
+      working-directory: terraform
+      run: terraform init
 
-      - name: Inject Task Definition ARN into appspec and encode
-        run: |
-          sed "s|REPLACEME|${TASK_DEF_ARN}|" appspec.yaml > appspec-rendered.yaml
-          echo "APPSPEC_CONTENT=$(base64 appspec-rendered.yaml | tr -d '\n')" >> $GITHUB_ENV
+    - name: Terraform Apply
+      working-directory: terraform
+      run: terraform apply -auto-approve -var="ecr_image_url=${{ env.image }}"
 
-      - name: Deploy using CodeDeploy
-        run: |
-          aws deploy create-deployment \
-            --application-name $CODEDEPLOY_APP \
-            --deployment-group-name $CODEDEPLOY_DG \
-            --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
-            --revision appSpecContent="{\"content\":\"$APPSPEC_CONTENT\"}" \
-            --file-exists-behavior OVERWRITE
+    - name: Create Task Definition File
+      run: |
+        aws ecs describe-task-definition --task-definition $TASK_FAMILY \
+        --query "taskDefinition" --output json > taskdef.json
+
+    - name: Create CodeDeploy Deployment
+      run: |
+        aws deploy create-deployment \
+          --application-name $CODEDEPLOY_APP \
+          --deployment-group-name $CODEDEPLOY_GROUP \
+          --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
+          --revision file://revision.json
+
+    - name: Generate Revision JSON
+      run: |
+        echo '{
+          "revisionType": "AppSpecContent",
+          "appSpecContent": {
+            "content": "'"$(base64 -w 0 appspec.yaml)"'",
+            "sha256": ""
+          },
+          "taskDefinition": {
+            "content": "'"$(base64 -w 0 taskdef.json)"'",
+            "sha256": ""
+          }
+        }' > revision.json
