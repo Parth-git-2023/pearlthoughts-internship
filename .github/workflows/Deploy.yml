@@ -60,24 +60,34 @@ jobs:
       run: terraform apply -auto-approve -var="ecr_image_url=${{ env.image }}"
 
     - name: Get Task Definition ARN
-      id: taskdef
+      id: get-task-def
       run: |
         TASK_DEF_ARN=$(aws ecs describe-task-definition --task-definition $TASK_FAMILY --query "taskDefinition.taskDefinitionArn" --output text)
         echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
         echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
 
-    - name: Replace placeholder in appspec.json
+    - name: Replace TaskDefinition in appspec.json
       run: |
-        sed "s|{{TASK_DEFINITION}}|${{ steps.taskdef.outputs.task_def_arn }}|" appspec.json > final-appspec.json
+        sed "s|{{TASK_DEFINITION}}|${{ steps.get-task-def.outputs.task_def_arn }}|" appspec.json > final-appspec.json
 
-    - name: Base64 encode final-appspec.json
+    - name: Encode AppSpec for CodeDeploy
       run: |
         base64 final-appspec.json | tr -d '\n' > appspec.b64
+        echo "APP_SPEC_CONTENT=$(cat appspec.b64)" >> $GITHUB_ENV
 
-    - name: Create CodeDeploy Deployment
+    - name: Create revision.json for CodeDeploy
+      run: |
+        echo '{
+          "revisionType": "AppSpecContent",
+          "appSpecContent": {
+            "content": "'"$APP_SPEC_CONTENT"'"
+          }
+        }' > revision.json
+
+    - name: Trigger CodeDeploy Deployment
       run: |
         aws deploy create-deployment \
           --application-name $CODEDEPLOY_APP \
           --deployment-group-name $CODEDEPLOY_GROUP \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
-          --revision "{\"revisionType\":\"AppSpecContent\",\"appSpecContent\":{\"content\":\"$(cat appspec.b64)\"}}"
+          --revision file://revision.json
