@@ -1,4 +1,4 @@
-name: Deploy Strapi to ECS
+name: Deploy Strapi to ECS (Blue/Green)
 
 on:
   push:
@@ -11,6 +11,8 @@ env:
   ECS_CLUSTER: parth-strapi-cluster
   ECS_SERVICE: parth-strapi-service
   TASK_FAMILY: parth-strapi-task
+  CODEDEPLOY_APP: parth-strapi-codedeploy-app
+  CODEDEPLOY_GROUP: parth-strapi-dg
 
 jobs:
   deploy:
@@ -43,7 +45,7 @@ jobs:
         ECR_URI=${{ env.ECR_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}
         docker build -t $ECR_URI:$IMAGE_TAG .
         docker push $ECR_URI:$IMAGE_TAG
-        echo "image=$ECR_URI:$IMAGE_TAG" >> $GITHUB_ENV
+        echo "IMAGE_URI=$ECR_URI:$IMAGE_TAG" >> $GITHUB_ENV
 
     - name: Install Terraform
       uses: hashicorp/setup-terraform@v3
@@ -54,6 +56,43 @@ jobs:
       working-directory: terraform
       run: terraform init
 
-    - name: Terraform Apply
+    - name: Terraform Apply with New Image
       working-directory: terraform
-      run: terraform apply -auto-approve -var="ecr_image_url=${{ env.image }}"
+      run: terraform apply -auto-approve -var="ecr_image_url=${{ env.IMAGE_URI }}"
+
+    - name: Create taskdef.json
+      run: |
+        cat > taskdef.json <<EOF
+        {
+          "family": "${{ env.TASK_FAMILY }}",
+          "executionRoleArn": "arn:aws:iam::607700977843:role/ecs-task-execution-role-p",
+          "networkMode": "awsvpc",
+          "containerDefinitions": [
+            {
+              "name": "strapi",
+              "image": "${{ env.IMAGE_URI }}",
+              "essential": true,
+              "portMappings": [
+                {
+                  "containerPort": 1337,
+                  "protocol": "tcp"
+                }
+              ]
+            }
+          ],
+          "requiresCompatibilities": ["FARGATE"],
+          "cpu": "512",
+          "memory": "1024"
+        }
+        EOF
+
+    - name: Deploy to ECS via CodeDeploy
+      run: |
+        aws deploy create-deployment \
+          --application-name $CODEDEPLOY_APP \
+          --deployment-group-name $CODEDEPLOY_GROUP \
+          --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
+          --file-exists-behavior OVERWRITE \
+          --revision file://appspec.yaml \
+          --task-definition file://taskdef.json \
+          --description "Blue/Green Deployment for $IMAGE_URI"

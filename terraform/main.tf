@@ -2,24 +2,17 @@ provider "aws" {
   region = "us-east-2"
 }
 
-# Get default VPC
+# Default VPC and Subnets
 data "aws_vpc" "default" {
   default = true
 }
 
-# 2 subnets from default VPC manually
 data "aws_subnet" "subnet1" {
-  id = "subnet-0906c244cfe901a9a"  # subnet in us-east-2a
+  id = "subnet-0906c244cfe901a9a"
 }
 
 data "aws_subnet" "subnet2" {
-  id = "subnet-0cc813dd4d76bf797"  # subnet in us-east-2b
-}
-
-# CloudWatch logs
-resource "aws_cloudwatch_log_group" "strapi_logs" {
-  name              = "/ecs/strapi-parth-logs"
-  retention_in_days = 7
+  id = "subnet-0cc813dd4d76bf797"
 }
 
 # ECS Cluster
@@ -43,18 +36,11 @@ resource "aws_ecs_task_definition" "parth_task" {
       containerPort = 1337
       protocol      = "tcp"
     }]
-    logConfiguration = {
-      logDriver = "awslogs"
-      options = {
-        awslogs-group         = aws_cloudwatch_log_group.strapi_logs.name
-        awslogs-region        = "us-east-2"
-        awslogs-stream-prefix = "strapi"
-      }
-    }
+    essential = true
   }])
 }
 
-# ALB Security Group
+# ALB Security Group (Allow HTTP & HTTPS)
 resource "aws_security_group" "alb_sg" {
   name   = "parth-alb-sg"
   vpc_id = data.aws_vpc.default.id
@@ -62,6 +48,13 @@ resource "aws_security_group" "alb_sg" {
   ingress {
     from_port   = 80
     to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -74,7 +67,7 @@ resource "aws_security_group" "alb_sg" {
   }
 }
 
-# ECS Service Security Group
+# ECS Service Security Group (Allow from ALB only)
 resource "aws_security_group" "ecs_service_sg" {
   name   = "parth-ecs-service-sg"
   vpc_id = data.aws_vpc.default.id
@@ -103,9 +96,9 @@ resource "aws_lb" "parth_alb" {
   security_groups    = [aws_security_group.alb_sg.id]
 }
 
-# Target Group
-resource "aws_lb_target_group" "parth_tg" {
-  name        = "parth-strapi-tg"
+# Target Group (Blue)
+resource "aws_lb_target_group" "parth_tg_blue" {
+  name        = "parth-strapi-tg-blue"
   port        = 1337
   protocol    = "HTTP"
   target_type = "ip"
@@ -121,29 +114,53 @@ resource "aws_lb_target_group" "parth_tg" {
   }
 }
 
-# Listener
+# Target Group (Green)
+resource "aws_lb_target_group" "parth_tg_green" {
+  name        = "parth-strapi-tg-green"
+  port        = 1337
+  protocol    = "HTTP"
+  target_type = "ip"
+  vpc_id      = data.aws_vpc.default.id
+
+  health_check {
+    path                = "/"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+    matcher             = "200-399"
+  }
+}
+
+# Listener with forward config (Blue/Green)
 resource "aws_lb_listener" "parth_listener" {
   load_balancer_arn = aws_lb.parth_alb.arn
   port              = 80
   protocol          = "HTTP"
 
   default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.parth_tg.arn
+    type = "forward"
+    forward {
+      target_group {
+        arn    = aws_lb_target_group.parth_tg_blue.arn
+        weight = 1
+      }
+
+      target_group {
+        arn    = aws_lb_target_group.parth_tg_green.arn
+        weight = 0
+      }
+    }
   }
 }
 
-# ECS Service
+# ECS Service (initial placeholder)
 resource "aws_ecs_service" "parth_service" {
   name            = "parth-strapi-service"
   cluster         = aws_ecs_cluster.parth_cluster.id
   task_definition = aws_ecs_task_definition.parth_task.arn
+  launch_type     = "FARGATE"
   desired_count   = 1
-
-  capacity_provider_strategy {
-    capacity_provider = "FARGATE_SPOT"
-    weight            = 1
-  }
 
   network_configuration {
     subnets         = [data.aws_subnet.subnet1.id, data.aws_subnet.subnet2.id]
@@ -152,12 +169,70 @@ resource "aws_ecs_service" "parth_service" {
   }
 
   load_balancer {
-    target_group_arn = aws_lb_target_group.parth_tg.arn
+    target_group_arn = aws_lb_target_group.parth_tg_blue.arn
     container_name   = "strapi"
     container_port   = 1337
   }
 
   depends_on = [aws_lb_listener.parth_listener]
+}
+
+# CodeDeploy Application
+resource "aws_codedeploy_app" "ecs_app" {
+  name = "parth-strapi-codedeploy-app"
+  compute_platform = "ECS"
+}
+
+# CodeDeploy Deployment Group
+resource "aws_codedeploy_deployment_group" "ecs_dg" {
+  app_name              = aws_codedeploy_app.ecs_app.name
+  deployment_group_name = "parth-strapi-dg"
+  service_role_arn      = "arn:aws:iam::607700977843:role/codedeploy-service-role-p"
+
+  deployment_config_name = "CodeDeployDefault.ECSCanary10Percent5Minutes"
+
+  ecs_service {
+    cluster_name = aws_ecs_cluster.parth_cluster.name
+    service_name = aws_ecs_service.parth_service.name
+  }
+
+  load_balancer_info {
+    target_group_pair_info {
+      prod_traffic_route {
+        listener_arns = [aws_lb_listener.parth_listener.arn]
+      }
+
+      target_group {
+        name = aws_lb_target_group.parth_tg_blue.name
+      }
+
+      target_group {
+        name = aws_lb_target_group.parth_tg_green.name
+      }
+    }
+  }
+
+  auto_rollback_configuration {
+    enabled = true
+    events  = ["DEPLOYMENT_FAILURE"]
+  }
+
+  deployment_style {
+    deployment_type  = "BLUE_GREEN"
+    deployment_option = "WITH_TRAFFIC_CONTROL"
+  }
+
+  blue_green_deployment_config {
+    terminate_blue_instances_on_deployment_success {
+      action = "TERMINATE"
+      termination_wait_time_in_minutes = 5
+    }
+
+    deployment_ready_option {
+      action_on_timeout = "CONTINUE_DEPLOYMENT"
+      wait_time_in_minutes = 0
+    }
+  }
 }
 
 output "alb_dns_name" {
