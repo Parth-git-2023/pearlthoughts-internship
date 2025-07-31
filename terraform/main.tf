@@ -2,7 +2,6 @@ provider "aws" {
   region = "us-east-2"
 }
 
-# Default VPC and Subnets
 data "aws_vpc" "default" {
   default = true
 }
@@ -15,12 +14,15 @@ data "aws_subnet" "subnet2" {
   id = "subnet-0cc813dd4d76bf797"
 }
 
-# ECS Cluster
+variable "ecr_image_url" {
+  description = "ECR image URI with tag"
+  type        = string
+}
+
 resource "aws_ecs_cluster" "parth_cluster" {
   name = "parth-strapi-cluster"
 }
 
-# ECS Task Definition
 resource "aws_ecs_task_definition" "parth_task" {
   family                   = "parth-strapi-task"
   requires_compatibilities = ["FARGATE"]
@@ -40,7 +42,6 @@ resource "aws_ecs_task_definition" "parth_task" {
   }])
 }
 
-# ALB Security Group (Allow HTTP & HTTPS)
 resource "aws_security_group" "alb_sg" {
   name   = "parth-alb-sg"
   vpc_id = data.aws_vpc.default.id
@@ -67,7 +68,6 @@ resource "aws_security_group" "alb_sg" {
   }
 }
 
-# ECS Service Security Group (Allow from ALB only)
 resource "aws_security_group" "ecs_service_sg" {
   name   = "parth-ecs-service-sg"
   vpc_id = data.aws_vpc.default.id
@@ -87,7 +87,6 @@ resource "aws_security_group" "ecs_service_sg" {
   }
 }
 
-# ALB
 resource "aws_lb" "parth_alb" {
   name               = "parth-strapi-alb"
   internal           = false
@@ -96,7 +95,6 @@ resource "aws_lb" "parth_alb" {
   security_groups    = [aws_security_group.alb_sg.id]
 }
 
-# Target Group (Blue)
 resource "aws_lb_target_group" "parth_tg_blue" {
   name        = "parth-strapi-tg-blue"
   port        = 1337
@@ -114,7 +112,6 @@ resource "aws_lb_target_group" "parth_tg_blue" {
   }
 }
 
-# Target Group (Green)
 resource "aws_lb_target_group" "parth_tg_green" {
   name        = "parth-strapi-tg-green"
   port        = 1337
@@ -132,7 +129,6 @@ resource "aws_lb_target_group" "parth_tg_green" {
   }
 }
 
-# Listener with forward config (Blue/Green)
 resource "aws_lb_listener" "parth_listener" {
   load_balancer_arn = aws_lb.parth_alb.arn
   port              = 80
@@ -154,7 +150,6 @@ resource "aws_lb_listener" "parth_listener" {
   }
 }
 
-# ECS Service (initial placeholder)
 resource "aws_ecs_service" "parth_service" {
   name            = "parth-strapi-service"
   cluster         = aws_ecs_cluster.parth_cluster.id
@@ -181,18 +176,15 @@ resource "aws_ecs_service" "parth_service" {
   depends_on = [aws_lb_listener.parth_listener]
 }
 
-# CodeDeploy Application
 resource "aws_codedeploy_app" "ecs_app" {
   name = "parth-strapi-codedeploy-app"
   compute_platform = "ECS"
 }
 
-# CodeDeploy Deployment Group
 resource "aws_codedeploy_deployment_group" "ecs_dg" {
   app_name              = aws_codedeploy_app.ecs_app.name
   deployment_group_name = "parth-strapi-dg"
   service_role_arn      = "arn:aws:iam::607700977843:role/codedeploy-service-role-p"
-
   deployment_config_name = "CodeDeployDefault.ECSCanary10Percent5Minutes"
 
   ecs_service {
@@ -205,11 +197,9 @@ resource "aws_codedeploy_deployment_group" "ecs_dg" {
       prod_traffic_route {
         listener_arns = [aws_lb_listener.parth_listener.arn]
       }
-
       target_group {
         name = aws_lb_target_group.parth_tg_blue.name
       }
-
       target_group {
         name = aws_lb_target_group.parth_tg_green.name
       }
