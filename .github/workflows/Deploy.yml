@@ -1,76 +1,103 @@
-name: Deploy Strapi ECS Blue/Green
+name: Deploy Strapi to ECS with Blue/Green
 
-on: [push]
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: us-east-2
+  ECR_REPO: parth-strapi-ecr
+  IMAGE_TAG: latest
+  ECS_TASK_FAMILY: parth-strapi-task
+  CONTAINER_NAME: strapi
+  CONTAINER_PORT: 1337
+  DEPLOY_APP: parth-strapi-codedeploy-app
+  DEPLOY_GROUP: parth-strapi-deploy-group
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    env:
-      AWS_REGION: us-east-2
-      ECR_REPO: parth-strapi-ecr
-      TASK_DEF_FAMILY: parth-strapi-task
-      CD_APP: parth-strapi-codedeploy-app
-      CD_GROUP: parth-strapi-deploy-group
-      CONTAINER_NAME: strapi
-      CONTAINER_PORT: 1337
 
     steps:
-      - uses: actions/checkout@v3
-      - uses: aws-actions/configure-aws-credentials@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Terraform setup
-        uses: hashicorp/setup-terraform@v3
+      - name: Get AWS Account ID
+        id: aws_account
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
+          echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
+
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin "${{ steps.aws_account.outputs.account_id }}.dkr.ecr.$AWS_REGION.amazonaws.com"
+
+      - name: Build and push Docker image
+        run: |
+          IMAGE_URI="${{ steps.aws_account.outputs.account_id }}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG"
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+
+          docker build -t $IMAGE_URI .
+          docker push $IMAGE_URI
+
       - name: Terraform Init & Apply
         working-directory: terraform
-        run: terraform init && terraform apply -auto-approve
-
-      - name: Ensure ECR exists
         run: |
-          aws ecr describe-repositories --repository-names $ECR_REPO || \
-          aws ecr create-repository --repository-name $ECR_REPO
+          terraform init
+          terraform apply -auto-approve -var="ecr_image_url=$IMAGE_URI"
 
-      - name: Login to ECR
-        run: aws ecr get-login-password --region $AWS_REGION | \
-             docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com
-
-      - name: Build & push image
+      - name: Generate appspec.json and base64 encode
+        id: appspec
         run: |
-          IMAGE_TAG=${{ github.sha }}
-          docker build -t $ECR_REPO:$IMAGE_TAG .
-          docker tag $ECR_REPO:$IMAGE_TAG ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/$ECR_REPO:$IMAGE_TAG
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/$ECR_REPO:$IMAGE_TAG
-          echo "IMAGE_URL=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/$ECR_REPO:$IMAGE_TAG" >> $GITHUB_ENV
+          TASK_DEF_ARN=$(aws ecs describe-task-definition --task-definition $ECS_TASK_FAMILY | jq -r '.taskDefinition.taskDefinitionArn')
+          
+          cat <<EOF > appspec.json
+          {
+            "version": 1,
+            "Resources": [
+              {
+                "TargetService": {
+                  "Type": "AWS::ECS::Service",
+                  "Properties": {
+                    "TaskDefinition": "$TASK_DEF_ARN",
+                    "LoadBalancerInfo": {
+                      "ContainerName": "$CONTAINER_NAME",
+                      "ContainerPort": $CONTAINER_PORT
+                    }
+                  }
+                }
+              }
+            ]
+          }
+          EOF
 
-      - name: Register ECS task def
-        id: reg
-        run: |
-          TASK_ARN=$(aws ecs register-task-definition \
-            --family $TASK_DEF_FAMILY \
-            --execution-role-arn arn:aws:iam::607700977843:role/ecs-task-execution-role-p \
-            --network-mode awsvpc \
-            --requires-compatibilities FARGATE \
-            --cpu "512" --memory "1024" \
-            --container-definitions "[{\"name\":\"$CONTAINER_NAME\",\"image\":\"$IMAGE_URL\",\"portMappings\":[{\"containerPort\":$CONTAINER_PORT,\"protocol\":\"tcp\"}]}]" \
-            --query 'taskDefinition.taskDefinitionArn' --output text)
-          echo "TASK_ARN=$TASK_ARN" >> $GITHUB_ENV
+          BASE64_CONTENT=$(base64 appspec.json | tr -d '\n')
+          echo "base64_appspec=$BASE64_CONTENT" >> $GITHUB_OUTPUT
 
-      - name: Prepare appspec
+      - name: Create revision.json
         run: |
-          sed "s|<TASK_DEF_ARN>|${TASK_ARN}|" appspec.json > final-appspec.json
-
-      - name: Base64 encode revision.json
-        run: |
-          B64=$(base64 -w 0 final-appspec.json)
-          echo "{\"revisionType\":\"AppSpecContent\",\"appSpecContent\":{\"content\":\"$B64\"}}" > revision.json
+          cat <<EOF > revision.json
+          {
+            "AppSpecContent": {
+              "Content": "${{ steps.appspec.outputs.base64_appspec }}",
+              "ContentType": "application/json"
+            }
+          }
+          EOF
 
       - name: Trigger CodeDeploy
         run: |
           aws deploy create-deployment \
-            --application-name $CD_APP \
-            --deployment-group-name $CD_GROUP \
+            --application-name $DEPLOY_APP \
+            --deployment-group-name $DEPLOY_GROUP \
             --revision file://revision.json \
-            --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes
+            --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
+            --region $AWS_REGION
