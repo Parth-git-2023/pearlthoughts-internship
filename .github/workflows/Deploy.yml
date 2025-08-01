@@ -73,47 +73,46 @@ jobs:
             --container-definitions "[{
               \"name\": \"$CONTAINER_NAME\",
               \"image\": \"607700977843.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG\",
-              \"portMappings\": [{
-                \"containerPort\": $CONTAINER_PORT,
-                \"protocol\": \"tcp\"
-              }],
+              \"portMappings\": [ { \"containerPort\": $CONTAINER_PORT, \"protocol\": \"tcp\" } ],
               \"essential\": true
             }]" \
             --query "taskDefinition.taskDefinitionArn" \
             --output text)
           echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
 
-     
       - name: Create AppSpec file
         run: |
           cat > appspec.json <<EOF
-          {
-            "version": 1,
-            "Resources": [
-              {
-                "TargetService": {
-                  "Type": "AWS::ECS::Service",
-                  "Properties": {
-                    "TaskDefinition": "${{ env.TASK_DEF_ARN }}",
-                    "LoadBalancerInfo": {
-                      "ContainerName": "$CONTAINER_NAME",
-                      "ContainerPort": $CONTAINER_PORT
-                    }
-                  }
-                }
-              }
-            ]
-          }EOF
+{
+  "version": 1,
+  "Resources": [
+    {
+      "TargetService": {
+        "Type": "AWS::ECS::Service",
+        "Properties": {
+          "TaskDefinition": "${{ env.TASK_DEF_ARN }}",
+          "LoadBalancerInfo": {
+            "ContainerName": "$CONTAINER_NAME",
+            "ContainerPort": $CONTAINER_PORT
+          }
+        }
+      }
+    }
+  ]
+}
+EOF 
 
       - name: Encode AppSpec to base64 and generate revision.json
         run: |
           cat appspec.json | base64 | tr -d '\n' > appspec.b64
           cat > revision.json <<EOF
-          {
-            "appSpecContent": {
-              "content": "$(cat appspec.b64)"
-            }
-          }EOF
+{
+  "appSpecContent": {
+    "content": "$(cat appspec.b64)"
+  }
+}
+
+EOF
 
       - name: Trigger CodeDeploy Deployment
         run: |
