@@ -71,7 +71,6 @@ jobs:
 
     - name: Prepare AppSpec JSON
       run: |
-        cp terraform/final-appspec.json appspec.json
         sed -i "s|REPLACE_TASK_DEFINITION_ARN|${{ env.TASK_DEF_ARN }}|g" appspec.json
         BASE64_CONTENT=$(base64 -w 0 appspec.json)
         echo "{\"appSpecContent\": {\"content\": \"$BASE64_CONTENT\", \"contentType\": \"application/json\"}}" > revision.json
