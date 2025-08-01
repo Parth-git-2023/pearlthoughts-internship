@@ -179,6 +179,7 @@ resource "aws_codedeploy_deployment_group" "parth_deployment_group" {
   service_role_arn       = "arn:aws:iam::607700977843:role/codedeploy-service-role-p"
 
   deployment_config_name = "CodeDeployDefault.ECSCanary10Percent5Minutes"
+
   auto_rollback_configuration {
     enabled = true
     events  = ["DEPLOYMENT_FAILURE"]
@@ -205,8 +206,23 @@ resource "aws_codedeploy_deployment_group" "parth_deployment_group" {
   }
 
   deployment_style {
-    deployment_type = "BLUE_GREEN"
+    deployment_type   = "BLUE_GREEN"
     deployment_option = "WITH_TRAFFIC_CONTROL"
+  }
+
+  blue_green_deployment_config {
+    terminate_blue_instances_on_deployment_success {
+      action = "TERMINATE"
+      termination_wait_time_in_minutes = 5
+    }
+
+    deployment_ready_option {
+      action_on_timeout = "CONTINUE_DEPLOYMENT"
+    }
+
+    green_fleet_provisioning_option {
+      action = "DISCOVER_EXISTING"
+    }
   }
 
   depends_on = [aws_ecs_service.parth_service]
