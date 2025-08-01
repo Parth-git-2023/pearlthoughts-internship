@@ -28,6 +28,11 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
+    - name: Ensure ECR Repo Exists
+      run: |
+        aws ecr describe-repositories --repository-names $ECR_REPO || \
+        aws ecr create-repository --repository-name $ECR_REPO
+
     - name: Login to Amazon ECR
       uses: aws-actions/amazon-ecr-login@v2
 
