@@ -219,10 +219,6 @@ resource "aws_codedeploy_deployment_group" "parth_deployment_group" {
     deployment_ready_option {
       action_on_timeout = "CONTINUE_DEPLOYMENT"
     }
-
-    green_fleet_provisioning_option {
-      action = "DISCOVER_EXISTING"
-    }
   }
 
   depends_on = [aws_ecs_service.parth_service]
