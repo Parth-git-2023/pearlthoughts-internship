@@ -1,81 +1,100 @@
-name: Deploy Strapi ECS Blue/Green
+name: Deploy to ECS with Blue/Green
 
 on:
   push:
-    branches: [main]
-
-env:
-  AWS_REGION: us-east-2
-  ECR_REPO: parth-strapi-ecr
-  ECR_ACCOUNT: 607700977843
-  ECS_CLUSTER: parth-strapi-cluster
-  ECS_SERVICE: parth-strapi-service
-  TASK_FAMILY: parth-strapi-task
-  CODEDEPLOY_APP: parth-strapi-codedeploy-app
-  CODEDEPLOY_GROUP: parth-strapi-dg
+    branches:
+      - main
 
 jobs:
   deploy:
+    name: Deploy Strapi to ECS with Blue/Green
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    env:
+      AWS_REGION: us-east-2
+      ECR_REPO: parth-strapi-ecr
+      ECS_CLUSTER: parth-strapi-cluster
+      SERVICE_NAME: parth-strapi-service
+      DEPLOYMENT_GROUP: parth-strapi-dg
+      APPLICATION_NAME: parth-strapi-codedeploy-app
+      CONTAINER_NAME: strapi
+      TASK_DEF_TEMPLATE: taskdef.json
+      APP_SPEC_FILE: appspec.json
 
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Ensure ECR Repo Exists
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to ECR
         run: |
-          aws ecr describe-repositories --repository-names $ECR_REPO || \
-          aws ecr create-repository --repository-name $ECR_REPO
+          IMAGE_TAG=${{ github.sha }}
+          docker build -t $ECR_REPO:$IMAGE_TAG ./strapi-app
+          docker tag $ECR_REPO:$IMAGE_TAG ${{ steps.login-ecr.outputs.registry }}/$ECR_REPO:$IMAGE_TAG
+          docker push ${{ steps.login-ecr.outputs.registry }}/$ECR_REPO:$IMAGE_TAG
+          echo "IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/$ECR_REPO:$IMAGE_TAG" >> $GITHUB_ENV
 
-      - name: Login to ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build & Push Docker Image
+      - name: Create taskdef.json
         run: |
-          IMAGE_TAG=parth-strapi-$(date +%s)
-          ECR_URI=${{ env.ECR_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}
-          docker build -t $ECR_URI:$IMAGE_TAG .
-          docker push $ECR_URI:$IMAGE_TAG
-          echo "image=$ECR_URI:$IMAGE_TAG" >> $GITHUB_ENV
+          cat > $TASK_DEF_TEMPLATE <<EOF
+          {
+            "family": "parth-strapi-task",
+            "networkMode": "awsvpc",
+            "executionRoleArn": "arn:aws:iam::607700977843:role/ecs-task-execution-role",
+            "containerDefinitions": [
+              {
+                "name": "${{ env.CONTAINER_NAME }}",
+                "image": "${{ env.IMAGE_URI }}",
+                "portMappings": [
+                  {
+                    "containerPort": 1337,
+                    "protocol": "tcp"
+                  }
+                ],
+                "essential": true
+              }
+            ],
+            "requiresCompatibilities": ["FARGATE"],
+            "cpu": "256",
+            "memory": "512"
+          }
+          EOF
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.6.6
-
-      - name: Terraform Init
-        working-directory: terraform
-        run: terraform init
-
-      - name: Terraform Apply
-        working-directory: terraform
-        run: terraform apply -auto-approve -var="ecr_image_url=${{ env.image }}"
-
-      - name: Get Task Definition ARN
-        id: get-task
+      - name: Register new ECS Task Definition
+        id: register-task-def
         run: |
-          TASK_DEF_ARN=$(aws ecs describe-task-definition --task-definition $TASK_FAMILY --query "taskDefinition.taskDefinitionArn" --output text)
+          TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://$TASK_DEF_TEMPLATE --query "taskDefinition.taskDefinitionArn" --output text)
           echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
-          echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
 
-      - name: Replace TaskDefinition in AppSpec
+      - name: Replace TaskDef in appspec.json
         run: |
-          sed "s|{{TASK_DEFINITION}}|${{ steps.get-task.outputs.task_def_arn }}|" appspec.json > final-appspec.json
+          jq --arg TASK_DEF "$TASK_DEF_ARN" '.Resources[0].TargetService.Properties.TaskDefinition = $TASK_DEF' appspec.json > final-appspec.json
+          base64 final-appspec.json > final-appspec.b64
 
-      - name: Base64 Encode AppSpec
-        run: base64 final-appspec.json | tr -d '\n' > appspec.b64
-
-      - name: Create Deployment via CodeDeploy
+      - name: Create revision.json for CodeDeploy
         run: |
-          aws deploy create-deployment \
-            --application-name $CODEDEPLOY_APP \
-            --deployment-group-name $CODEDEPLOY_GROUP \
-            --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
-            --revision '{"revisionType":"AppSpecContent","appSpecContent":{"content":"'"$(cat appspec.b64)"'"}}'
+          echo "{
+            \"applicationName\": \"${{ env.APPLICATION_NAME }}\",
+            \"deploymentGroupName\": \"${{ env.DEPLOYMENT_GROUP }}\",
+            \"revision\": {
+              \"revisionType\": \"AppSpecContent\",
+              \"appSpecContent\": {
+                \"content\": \"$(cat final-appspec.b64 | tr -d '\n')\",
+                \"sha256\": \"\"
+              }
+            }
+          }" > revision.json
+
+      - name: Deploy to ECS via CodeDeploy
+        run: |
+          aws deploy create-deployment --cli-input-json file://revision.json
