@@ -2,43 +2,27 @@ provider "aws" {
   region = "us-east-2"
 }
 
+# Default VPC
 data "aws_vpc" "default" {
   default = true
 }
 
-data "aws_subnet" "subnet1" {
-  id = "subnet-0906c244cfe901a9a"
+# Use only 2 subnets from different AZs
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
 }
 
-data "aws_subnet" "subnet2" {
-  id = "subnet-0cc813dd4d76bf797"
-}
-
-resource "aws_ecs_cluster" "parth_cluster" {
-  name = "parth-strapi-cluster"
-}
-
-resource "aws_ecs_task_definition" "parth_task" {
-  family                   = "parth-strapi-task"
-  requires_compatibilities = ["FARGATE"]
-  network_mode             = "awsvpc"
-  cpu                      = "512"
-  memory                   = "1024"
-  execution_role_arn       = "arn:aws:iam::607700977843:role/ecs-task-execution-role-p"
-
-  container_definitions = jsonencode([{
-    name      = "strapi"
-    image     = var.ecr_image_url
-    portMappings = [{
-      containerPort = 1337
-      protocol      = "tcp"
-    }]
-  }])
+locals {
+  selected_subnets = slice(data.aws_subnets.default.ids, 0, 2)
 }
 
 resource "aws_security_group" "alb_sg" {
-  name   = "parth-alb-sg"
-  vpc_id = data.aws_vpc.default.id
+  name        = "alb-sg"
+  description = "Allow HTTP"
+  vpc_id      = data.aws_vpc.default.id
 
   ingress {
     from_port   = 80
@@ -47,13 +31,6 @@ resource "aws_security_group" "alb_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
   egress {
     from_port   = 0
     to_port     = 0
@@ -62,138 +39,116 @@ resource "aws_security_group" "alb_sg" {
   }
 }
 
-resource "aws_security_group" "ecs_service_sg" {
-  name   = "parth-ecs-service-sg"
-  vpc_id = data.aws_vpc.default.id
-
-  ingress {
-    from_port       = 1337
-    to_port         = 1337
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb_sg.id]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-resource "aws_lb" "parth_alb" {
+resource "aws_lb" "strapi_alb" {
   name               = "parth-strapi-alb"
-  internal           = false
   load_balancer_type = "application"
-  subnets            = [data.aws_subnet.subnet1.id, data.aws_subnet.subnet2.id]
+  subnets            = local.selected_subnets
   security_groups    = [aws_security_group.alb_sg.id]
 }
 
-resource "aws_lb_target_group" "blue_tg" {
-  name        = "blue-strapi-tg"
-  port        = 1337
-  protocol    = "HTTP"
+resource "aws_lb_target_group" "blue" {
+  name     = "parth-strapi-blue-tg"
+  port     = 1337
+  protocol = "HTTP"
+  vpc_id   = data.aws_vpc.default.id
   target_type = "ip"
-  vpc_id      = data.aws_vpc.default.id
-
-  health_check {
-    path                = "/"
-    interval            = 30
-    timeout             = 5
-    healthy_threshold   = 2
-    unhealthy_threshold = 2
-    matcher             = "200-399"
-  }
 }
 
-resource "aws_lb_target_group" "green_tg" {
-  name        = "green-strapi-tg"
-  port        = 1337
-  protocol    = "HTTP"
+resource "aws_lb_target_group" "green" {
+  name     = "parth-strapi-green-tg"
+  port     = 1337
+  protocol = "HTTP"
+  vpc_id   = data.aws_vpc.default.id
   target_type = "ip"
-  vpc_id      = data.aws_vpc.default.id
-
-  health_check {
-    path                = "/"
-    interval            = 30
-    timeout             = 5
-    healthy_threshold   = 2
-    unhealthy_threshold = 2
-    matcher             = "200-399"
-  }
 }
 
-resource "aws_lb_listener" "http" {
-  load_balancer_arn = aws_lb.parth_alb.arn
+resource "aws_lb_listener" "listener" {
+  load_balancer_arn = aws_lb.strapi_alb.arn
   port              = 80
   protocol          = "HTTP"
 
   default_action {
-    type = "forward"
-    forward {
-      target_group {
-        arn    = aws_lb_target_group.blue_tg.arn
-        weight = 1
-      }
-      target_group {
-        arn    = aws_lb_target_group.green_tg.arn
-        weight = 0
-      }
-    }
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.blue.arn
   }
 }
 
-resource "aws_ecs_service" "ecs_service" {
-  name            = "parth-strapi-service"
-  cluster         = aws_ecs_cluster.parth_cluster.id
-  task_definition = aws_ecs_task_definition.parth_task.arn
-  launch_type     = "FARGATE"
-  desired_count   = 1
+resource "aws_ecs_cluster" "strapi_cluster" {
+  name = "parth-strapi-cluster"
+}
 
+resource "aws_ecs_task_definition" "strapi_task" {
+  family                   = "parth-strapi-task"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "512"
+  memory                   = "1024"
+  execution_role_arn       = "arn:aws:iam::607700977843:role/ecs-task-execution-role-p"
+
+  container_definitions = jsonencode([
+    {
+      name  = "strapi"
+      image = "607700977843.dkr.ecr.us-east-2.amazonaws.com/parth-strapi-ecr:latest"
+      portMappings = [
+        {
+          containerPort = 1337
+          protocol      = "tcp"
+        }
+      ]
+    }
+  ])
+}
+
+resource "aws_ecs_service" "strapi_service" {
+  name            = "parth-strapi-service"
+  cluster         = aws_ecs_cluster.strapi_cluster.id
+  task_definition = aws_ecs_task_definition.strapi_task.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
   deployment_controller {
     type = "CODE_DEPLOY"
   }
 
   network_configuration {
-    subnets         = [data.aws_subnet.subnet1.id, data.aws_subnet.subnet2.id]
-    security_groups = [aws_security_group.ecs_service_sg.id]
+    subnets         = local.selected_subnets
     assign_public_ip = true
+    security_groups = [aws_security_group.alb_sg.id]
   }
 
   load_balancer {
-    target_group_arn = aws_lb_target_group.blue_tg.arn
+    target_group_arn = aws_lb_target_group.blue.arn
     container_name   = "strapi"
     container_port   = 1337
   }
 
-  depends_on = [aws_lb_listener.http]
+  depends_on = [aws_lb_listener.listener]
 }
 
-resource "aws_codedeploy_app" "ecs_app" {
-  name             = "parth-strapi-codedeploy-app"
+resource "aws_codedeploy_app" "strapi_app" {
+  name = "parth-strapi-codedeploy-app"
   compute_platform = "ECS"
 }
 
-resource "aws_codedeploy_deployment_group" "ecs_dg" {
-  app_name              = aws_codedeploy_app.ecs_app.name
-  deployment_group_name = "parth-strapi-dg"
+resource "aws_codedeploy_deployment_group" "strapi_group" {
+  app_name              = aws_codedeploy_app.strapi_app.name
+  deployment_group_name = "parth-strapi-deploy-group"
   service_role_arn      = "arn:aws:iam::607700977843:role/codedeploy-service-role-p"
 
-  deployment_style {
-    deployment_type   = "BLUE_GREEN"
-    deployment_option = "WITH_TRAFFIC_CONTROL"
-  }
-
   deployment_config_name = "CodeDeployDefault.ECSCanary10Percent5Minutes"
+
+  ecs_service {
+    cluster_name = aws_ecs_cluster.strapi_cluster.name
+    service_name = aws_ecs_service.strapi_service.name
+  }
 
   auto_rollback_configuration {
     enabled = true
     events  = ["DEPLOYMENT_FAILURE"]
   }
 
-  ecs_service {
-    cluster_name = aws_ecs_cluster.parth_cluster.name
-    service_name = aws_ecs_service.ecs_service.name
+  deployment_style {
+    deployment_type = "BLUE_GREEN"
+    deployment_option = "WITH_TRAFFIC_CONTROL"
   }
 
   blue_green_deployment_config {
@@ -204,26 +159,22 @@ resource "aws_codedeploy_deployment_group" "ecs_dg" {
 
     deployment_ready_option {
       action_on_timeout = "CONTINUE_DEPLOYMENT"
+      wait_time_in_minutes = 0
     }
   }
 
   load_balancer_info {
     target_group_pair_info {
       target_group {
-        name = aws_lb_target_group.blue_tg.name
+        name = aws_lb_target_group.blue.name
       }
       target_group {
-        name = aws_lb_target_group.green_tg.name
+        name = aws_lb_target_group.green.name
       }
+
       prod_traffic_route {
-        listener_arns = [aws_lb_listener.http.arn]
+        listener_arns = [aws_lb_listener.listener.arn]
       }
     }
   }
-
-  depends_on = [aws_ecs_service.ecs_service]
-}
-
-output "alb_dns_name" {
-  value = aws_lb.parth_alb.dns_name
 }
