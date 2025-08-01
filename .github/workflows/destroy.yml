@@ -33,4 +33,4 @@ jobs:
 
     - name: Terraform Destroy (forcefully delete all)
       working-directory: terraform
-      run: terraform destroy -auto-approve
+      run: terraform destroy -auto-approve -var="ecr_image_url=dummy"
