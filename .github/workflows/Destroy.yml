@@ -1,82 +1,35 @@
-name: Force Delete AWS Resources
+name: Destroy Strapi Infrastructure
 
 on:
-  workflow_dispatch:  
+  workflow_dispatch:
 
 env:
   AWS_REGION: us-east-2
-  CLUSTER_NAME: parth-strapi-cluster
-  SERVICE_NAME: parth-strapi-service
-  TASK_FAMILY: parth-strapi-task
-  TG_BLUE: parth-strapi-tg-blue
-  TG_GREEN: parth-strapi-tg-green
-  ALB_NAME: parth-strapi-alb
   ECR_REPO: parth-strapi-ecr
+  TF_WORKING_DIR: terraform
 
 jobs:
-  force-delete:
+  destroy:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Configure AWS credentials
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Stop & Delete ECS Service and Cluster
-      run: |
-        aws ecs update-service --cluster $CLUSTER_NAME --service $SERVICE_NAME --desired-count 0 || true
-        sleep 15
-        aws ecs delete-service --cluster $CLUSTER_NAME --service $SERVICE_NAME --force || true
-        aws ecs delete-cluster --cluster $CLUSTER_NAME || true
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
 
-    - name: Deregister ECS Task Definitions
-      run: |
-        for arn in $(aws ecs list-task-definitions --family-prefix $TASK_FAMILY --query "taskDefinitionArns[]" --output text); do
-          aws ecs deregister-task-definition --task-definition "$arn" || true
-        done
+    - name: Terraform Init
+      working-directory: ${{ env.TF_WORKING_DIR }}
+      run: terraform init
 
-    - name: Delete ALB and Target Groups
-      run: |
-        TG_ARN_BLUE=$(aws elbv2 describe-target-groups --names $TG_BLUE --query "TargetGroups[0].TargetGroupArn" --output text)
-        TG_ARN_GREEN=$(aws elbv2 describe-target-groups --names $TG_GREEN --query "TargetGroups[0].TargetGroupArn" --output text)
-        ALB_ARN=$(aws elbv2 describe-load-balancers --names $ALB_NAME --query "LoadBalancers[0].LoadBalancerArn" --output text)
-
-        if [ "$ALB_ARN" != "None" ]; then
-          LISTENER_ARN=$(aws elbv2 describe-listeners --load-balancer-arn $ALB_ARN --query "Listeners[0].ListenerArn" --output text)
-          aws elbv2 delete-listener --listener-arn $LISTENER_ARN || true
-          aws elbv2 delete-load-balancer --load-balancer-arn $ALB_ARN || true
-        fi
-
-        if [ "$TG_ARN_BLUE" != "None" ]; then
-          aws elbv2 delete-target-group --target-group-arn $TG_ARN_BLUE || true
-        fi
-
-        if [ "$TG_ARN_GREEN" != "None" ]; then
-          aws elbv2 delete-target-group --target-group-arn $TG_ARN_GREEN || true
-        fi
-
-    - name: Wait and Delete ENIs attached to Security Groups
-      run: |
-        for sg in parth-alb-sg parth-ecs-service-sg; do
-          SG_ID=$(aws ec2 describe-security-groups --filters Name=group-name,Values=$sg --query "SecurityGroups[0].GroupId" --output text)
-          echo "Checking ENIs for $SG_ID"
-          ENI_IDS=$(aws ec2 describe-network-interfaces --filters Name=group-id,Values=$SG_ID --query 'NetworkInterfaces[*].NetworkInterfaceId' --output text)
-          for eni in $ENI_IDS; do
-            echo "Deleting ENI: $eni"
-            aws ec2 delete-network-interface --network-interface-id $eni || true
-          done
-        done
-
-        echo "Waiting 30s for ENIs to detach..."
-        sleep 30
-
-    - name: Delete ECR Repo and All Images
-      run: |
-        IMAGE_IDS=$(aws ecr list-images --repository-name $ECR_REPO --query 'imageIds[*]' --output json)
-        if [ "$IMAGE_IDS" != "[]" ]; then
-          aws ecr batch-delete-image --repository-name $ECR_REPO --image-ids "$IMAGE_IDS" || true
-        fi
-        aws ecr delete-repository --repository-name $ECR_REPO --force || true
+    - name: Terraform Destroy
+      working-directory: ${{ env.TF_WORKING_DIR }}
+      run: terraform destroy -auto-approve

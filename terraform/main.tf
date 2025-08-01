@@ -14,12 +14,10 @@ data "aws_subnet" "subnet2" {
   id = "subnet-0cc813dd4d76bf797"
 }
 
-# ECS Cluster
 resource "aws_ecs_cluster" "parth_cluster" {
   name = "parth-strapi-cluster"
 }
 
-# ECS Task Definition (will be replaced during deployment)
 resource "aws_ecs_task_definition" "parth_task" {
   family                   = "parth-strapi-task"
   requires_compatibilities = ["FARGATE"]
@@ -38,7 +36,6 @@ resource "aws_ecs_task_definition" "parth_task" {
   }])
 }
 
-# ALB Security Group
 resource "aws_security_group" "alb_sg" {
   name   = "parth-alb-sg"
   vpc_id = data.aws_vpc.default.id
@@ -65,7 +62,6 @@ resource "aws_security_group" "alb_sg" {
   }
 }
 
-# ECS Service Security Group
 resource "aws_security_group" "ecs_service_sg" {
   name   = "parth-ecs-service-sg"
   vpc_id = data.aws_vpc.default.id
@@ -85,7 +81,6 @@ resource "aws_security_group" "ecs_service_sg" {
   }
 }
 
-# ALB
 resource "aws_lb" "parth_alb" {
   name               = "parth-strapi-alb"
   internal           = false
@@ -94,7 +89,6 @@ resource "aws_lb" "parth_alb" {
   security_groups    = [aws_security_group.alb_sg.id]
 }
 
-# Target Groups: Blue and Green
 resource "aws_lb_target_group" "blue_tg" {
   name        = "blue-strapi-tg"
   port        = 1337
@@ -129,7 +123,6 @@ resource "aws_lb_target_group" "green_tg" {
   }
 }
 
-# ALB Listener for HTTP
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.parth_alb.arn
   port              = 80
@@ -142,7 +135,6 @@ resource "aws_lb_listener" "http" {
         arn    = aws_lb_target_group.blue_tg.arn
         weight = 1
       }
-
       target_group {
         arn    = aws_lb_target_group.green_tg.arn
         weight = 0
@@ -151,13 +143,37 @@ resource "aws_lb_listener" "http" {
   }
 }
 
-# CodeDeploy Application
+resource "aws_ecs_service" "ecs_service" {
+  name            = "parth-strapi-service"
+  cluster         = aws_ecs_cluster.parth_cluster.id
+  task_definition = aws_ecs_task_definition.parth_task.arn
+  launch_type     = "FARGATE"
+  desired_count   = 1
+
+  deployment_controller {
+    type = "CODE_DEPLOY"
+  }
+
+  network_configuration {
+    subnets         = [data.aws_subnet.subnet1.id, data.aws_subnet.subnet2.id]
+    security_groups = [aws_security_group.ecs_service_sg.id]
+    assign_public_ip = true
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.blue_tg.arn
+    container_name   = "strapi"
+    container_port   = 1337
+  }
+
+  depends_on = [aws_lb_listener.http]
+}
+
 resource "aws_codedeploy_app" "ecs_app" {
   name             = "parth-strapi-codedeploy-app"
   compute_platform = "ECS"
 }
 
-# CodeDeploy Deployment Group (Blue/Green)
 resource "aws_codedeploy_deployment_group" "ecs_dg" {
   app_name              = aws_codedeploy_app.ecs_app.name
   deployment_group_name = "parth-strapi-dg"
@@ -177,7 +193,7 @@ resource "aws_codedeploy_deployment_group" "ecs_dg" {
 
   ecs_service {
     cluster_name = aws_ecs_cluster.parth_cluster.name
-    service_name = "parth-strapi-service"
+    service_name = aws_ecs_service.ecs_service.name
   }
 
   blue_green_deployment_config {
@@ -204,6 +220,8 @@ resource "aws_codedeploy_deployment_group" "ecs_dg" {
       }
     }
   }
+
+  depends_on = [aws_ecs_service.ecs_service]
 }
 
 output "alb_dns_name" {
