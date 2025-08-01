@@ -37,7 +37,7 @@ jobs:
 
       - name: Build and Push Docker Image
         run: |
-          docker build -t $ECR_REPO:$IMAGE_TAG .
+          docker build -t $ECR_REPO:$IMAGE_TAG ./strapi-app
           docker tag $ECR_REPO:$IMAGE_TAG 607700977843.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
           docker push 607700977843.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
 
