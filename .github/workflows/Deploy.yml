@@ -107,10 +107,12 @@ jobs:
           cat appspec.json | base64 | tr -d '\n' > appspec.b64
           CONTENT=$(cat appspec.b64)
           echo "{" > revision.json
+          echo '  "revisionType": "AppSpecContent",' >> revision.json
           echo '  "appSpecContent": {' >> revision.json
           echo "    \"content\": \"${CONTENT}\"" >> revision.json
           echo '  }' >> revision.json
           echo "}" >> revision.json
+
 
       - name: Trigger CodeDeploy Deployment
         run: |
