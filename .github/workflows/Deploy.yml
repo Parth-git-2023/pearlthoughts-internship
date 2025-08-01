@@ -1,4 +1,4 @@
-name: Build & Deploy to ECS
+name: Deploy to ECS with Blue/Green
 
 on:
   push:
@@ -7,66 +7,94 @@ on:
 
 jobs:
   deploy:
+    name: Deploy Strapi to ECS with Blue/Green
     runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: us-east-2
+      ECR_REPO: parth-strapi-ecr
+      ECS_CLUSTER: parth-strapi-cluster
+      SERVICE_NAME: parth-strapi-service
+      DEPLOYMENT_GROUP: parth-strapi-dg
+      APPLICATION_NAME: parth-strapi-codedeploy-app
+      CONTAINER_NAME: strapi
+      TASK_DEF_TEMPLATE: taskdef.json
+      APP_SPEC_FILE: appspec.json
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-2
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login to Amazon ECR
+      - name: Log in to Amazon ECR
+        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
 
-      - name: Build and push Docker image to ECR
-        id: build
+      - name: Build, tag, and push image to ECR
         run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          IMAGE_URI="$ACCOUNT_ID.dkr.ecr.us-east-2.amazonaws.com/parth-strapi-ecr:${{ github.sha }}"
-          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
-          aws ecr describe-repositories --repository-names parth-strapi-ecr || \
-            aws ecr create-repository --repository-name parth-strapi-ecr
-          docker build -t $IMAGE_URI ./strapi-app
-          docker push $IMAGE_URI
+          IMAGE_TAG=${{ github.sha }}
+          docker build -t $ECR_REPO:$IMAGE_TAG ./strapi-app
+          docker tag $ECR_REPO:$IMAGE_TAG ${{ steps.login-ecr.outputs.registry }}/$ECR_REPO:$IMAGE_TAG
+          docker push ${{ steps.login-ecr.outputs.registry }}/$ECR_REPO:$IMAGE_TAG
+          echo "IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/$ECR_REPO:$IMAGE_TAG" >> $GITHUB_ENV
 
-      - name: Install Terraform
+      - name: Create taskdef.json
         run: |
-          sudo apt-get update && sudo apt-get install -y unzip
-          curl -fsSL https://releases.hashicorp.com/terraform/1.6.6/terraform_1.6.6_linux_amd64.zip -o terraform.zip
-          unzip -o terraform.zip
-          sudo mv terraform /usr/local/bin/
-          terraform -version
-
-      - name: Terraform Init & Apply
-        working-directory: ./terraform
-        env:
-          image_uri: ${{ env.IMAGE_URI }}
-        run: |
-          terraform init
-          terraform apply -auto-approve -var="codedeploy_role_arn=arn:aws:iam::607700977843:role/codedeploy-service-role-p" -var="image_uri=${IMAGE_URI}"
-
-      - name: Generate appspec + trigger CodeDeploy
-        working-directory: ./terraform
-        env:
-          TASKDEF_ARN=$(terraform output -raw aws_ecs_task_definition_strapi_arn || terraform state show aws_ecs_task_definition.strapi | grep 'task_definition_arn' | awk '{print $3}')
-        run: |
-          sed "s|\"TaskDefinition\": \"\"|\"TaskDefinition\": \"${TASKDEF_ARN}\"|" ../appspec.json > final-appspec.json
-          base64 final-appspec.json > final-appspec.b64
-          cat > revision.json <<EOF
+          cat > $TASK_DEF_TEMPLATE <<EOF
           {
-            "applicationName": "parth-strapi-cd-app",
-            "deploymentGroupName": "parth-strapi-dg",
-            "revision": {
-              "revisionType": "AppSpecContent",
-              "appSpecContent": {
-                "content": "$(cat final-appspec.b64 | tr -d '\n')"
+            "family": "parth-strapi-task",
+            "networkMode": "awsvpc",
+            "executionRoleArn": "arn:aws:iam::607700977843:role/ecs-task-execution-role",
+            "containerDefinitions": [
+              {
+                "name": "${{ env.CONTAINER_NAME }}",
+                "image": "${{ env.IMAGE_URI }}",
+                "portMappings": [
+                  {
+                    "containerPort": 1337,
+                    "protocol": "tcp"
+                  }
+                ],
+                "essential": true
               }
-            }
+            ],
+            "requiresCompatibilities": ["FARGATE"],
+            "cpu": "256",
+            "memory": "512"
           }
           EOF
+
+      - name: Register new ECS Task Definition
+        id: register-task-def
+        run: |
+          TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://$TASK_DEF_TEMPLATE --query "taskDefinition.taskDefinitionArn" --output text)
+          echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
+
+      - name: Replace TaskDef in appspec.json
+        run: |
+          jq --arg TASK_DEF "$TASK_DEF_ARN" '.Resources[0].TargetService.Properties.TaskDefinition = $TASK_DEF' appspec.json > final-appspec.json
+          base64 final-appspec.json > final-appspec.b64
+
+      - name: Create revision.json for CodeDeploy
+        run: |
+          echo "{
+            \"applicationName\": \"${{ env.APPLICATION_NAME }}\",
+            \"deploymentGroupName\": \"${{ env.DEPLOYMENT_GROUP }}\",
+            \"revision\": {
+              \"revisionType\": \"AppSpecContent\",
+              \"appSpecContent\": {
+                \"content\": \"$(cat final-appspec.b64 | tr -d '\n')\",
+                \"sha256\": \"\"
+              }
+            }
+          }" > revision.json
+
+      - name: Deploy to ECS via CodeDeploy
+        run: |
           aws deploy create-deployment --cli-input-json file://revision.json
