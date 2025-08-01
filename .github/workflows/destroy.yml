@@ -33,4 +33,4 @@ jobs:
 
     - name: Terraform Destroy (forcefully delete all)
       working-directory: terraform
-      run: terraform destroy -auto-approve -var="ecr_image_url=dummy"
+      run: terraform destroy -auto-approve -var="607700977843.dkr.ecr.us-east-2.amazonaws.com/parth-strapi-ecr:parth-strapi-1754080549"
