@@ -45,7 +45,7 @@ jobs:
           IMAGE_URI="${{ steps.aws_account.outputs.account_id }}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG"
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
 
-          docker build -t $IMAGE_URI .
+          docker build -t $IMAGE_URI ./strapi-app
           docker push $IMAGE_URI
 
       - name: Terraform Init & Apply
