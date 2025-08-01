@@ -19,7 +19,7 @@ resource "aws_ecs_cluster" "parth_cluster" {
   name = "parth-strapi-cluster"
 }
 
-# ECS Task Definition
+# ECS Task Definition (will be replaced during deployment)
 resource "aws_ecs_task_definition" "parth_task" {
   family                   = "parth-strapi-task"
   requires_compatibilities = ["FARGATE"]
@@ -94,7 +94,7 @@ resource "aws_lb" "parth_alb" {
   security_groups    = [aws_security_group.alb_sg.id]
 }
 
-# Target Groups (Blue + Green)
+# Target Groups: Blue and Green
 resource "aws_lb_target_group" "blue_tg" {
   name        = "blue-strapi-tg"
   port        = 1337
@@ -129,7 +129,7 @@ resource "aws_lb_target_group" "green_tg" {
   }
 }
 
-# ALB Listener
+# ALB Listener for HTTP
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.parth_alb.arn
   port              = 80
@@ -139,12 +139,12 @@ resource "aws_lb_listener" "http" {
     type = "forward"
     forward {
       target_group {
-        arn = aws_lb_target_group.blue_tg.arn
+        arn    = aws_lb_target_group.blue_tg.arn
         weight = 1
       }
 
       target_group {
-        arn = aws_lb_target_group.green_tg.arn
+        arn    = aws_lb_target_group.green_tg.arn
         weight = 0
       }
     }
@@ -153,17 +153,23 @@ resource "aws_lb_listener" "http" {
 
 # CodeDeploy Application
 resource "aws_codedeploy_app" "ecs_app" {
-  name = "parth-strapi-codedeploy-app"
+  name             = "parth-strapi-codedeploy-app"
   compute_platform = "ECS"
 }
 
-# CodeDeploy Deployment Group
+# CodeDeploy Deployment Group (Blue/Green)
 resource "aws_codedeploy_deployment_group" "ecs_dg" {
   app_name              = aws_codedeploy_app.ecs_app.name
   deployment_group_name = "parth-strapi-dg"
   service_role_arn      = "arn:aws:iam::607700977843:role/codedeploy-service-role-p"
 
+  deployment_style {
+    deployment_type   = "BLUE_GREEN"
+    deployment_option = "WITH_TRAFFIC_CONTROL"
+  }
+
   deployment_config_name = "CodeDeployDefault.ECSCanary10Percent5Minutes"
+
   auto_rollback_configuration {
     enabled = true
     events  = ["DEPLOYMENT_FAILURE"]
@@ -190,11 +196,9 @@ resource "aws_codedeploy_deployment_group" "ecs_dg" {
       target_group {
         name = aws_lb_target_group.blue_tg.name
       }
-
       target_group {
         name = aws_lb_target_group.green_tg.name
       }
-
       prod_traffic_route {
         listener_arns = [aws_lb_listener.http.arn]
       }
