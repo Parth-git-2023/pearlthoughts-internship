@@ -73,7 +73,10 @@ jobs:
             --container-definitions "[{
               \"name\": \"$CONTAINER_NAME\",
               \"image\": \"607700977843.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG\",
-              \"portMappings\": [ { \"containerPort\": $CONTAINER_PORT, \"protocol\": \"tcp\" } ],
+              \"portMappings\": [{
+                \"containerPort\": $CONTAINER_PORT,
+                \"protocol\": \"tcp\"
+              }],
               \"essential\": true
             }]" \
             --query "taskDefinition.taskDefinitionArn" \
@@ -90,17 +93,17 @@ jobs:
       "TargetService": {
         "Type": "AWS::ECS::Service",
         "Properties": {
-          "TaskDefinition": "${{ env.TASK_DEF_ARN }}",
+          "TaskDefinition": "${TASK_DEF_ARN}",
           "LoadBalancerInfo": {
-            "ContainerName": "$CONTAINER_NAME",
-            "ContainerPort": $CONTAINER_PORT
+            "ContainerName": "${CONTAINER_NAME}",
+            "ContainerPort": ${CONTAINER_PORT}
           }
         }
       }
     }
   ]
 }
-EOF 
+EOF
 
       - name: Encode AppSpec to base64 and generate revision.json
         run: |
@@ -111,7 +114,6 @@ EOF
     "content": "$(cat appspec.b64)"
   }
 }
-
 EOF
 
       - name: Trigger CodeDeploy Deployment
