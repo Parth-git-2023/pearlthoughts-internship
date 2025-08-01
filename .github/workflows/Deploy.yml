@@ -9,11 +9,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
 
-    env:
-      AWS_REGION: us-east-2
-      ECR_REPO: parth-strapi-ecr
-      ECS_TASK_ROLE: arn:aws:iam::607700977843:role/ecs-task-execution-role-p
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -23,33 +18,55 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: us-east-2
 
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v1
 
-      - name: Create ECR repository (if not exists)
+      - name: Build and push Docker image to ECR
+        id: build
         run: |
-          aws ecr describe-repositories --repository-names $ECR_REPO || \
-          aws ecr create-repository --repository-name $ECR_REPO
-
-      - name: Build and Push Docker image
-        run: |
-          IMAGE_URI="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPO:${{ github.sha }}"
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          IMAGE_URI="$ACCOUNT_ID.dkr.ecr.us-east-2.amazonaws.com/parth-strapi-ecr:${{ github.sha }}"
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+          aws ecr describe-repositories --repository-names parth-strapi-ecr || \
+            aws ecr create-repository --repository-name parth-strapi-ecr
           docker build -t $IMAGE_URI ./strapi-app
           docker push $IMAGE_URI
-          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
 
       - name: Install Terraform
         run: |
           sudo apt-get update && sudo apt-get install -y unzip
           curl -fsSL https://releases.hashicorp.com/terraform/1.6.6/terraform_1.6.6_linux_amd64.zip -o terraform.zip
-          unzip terraform.zip
+          unzip -o terraform.zip
           sudo mv terraform /usr/local/bin/
           terraform -version
 
-      - name: Apply Terraform
+      - name: Terraform Init & Apply
         working-directory: ./terraform
+        env:
+          image_uri: ${{ env.IMAGE_URI }}
         run: |
           terraform init
-          terraform apply -auto-approve -var="codedeploy_role_arn=arn:aws:iam::607700977843:role/codedeploy-service-role-p"
+          terraform apply -auto-approve -var="codedeploy_role_arn=arn:aws:iam::607700977843:role/codedeploy-service-role-p" -var="image_uri=${IMAGE_URI}"
+
+      - name: Generate appspec + trigger CodeDeploy
+        working-directory: ./terraform
+        env:
+          TASKDEF_ARN=$(terraform output -raw aws_ecs_task_definition_strapi_arn || terraform state show aws_ecs_task_definition.strapi | grep 'task_definition_arn' | awk '{print $3}')
+        run: |
+          sed "s|\"TaskDefinition\": \"\"|\"TaskDefinition\": \"${TASKDEF_ARN}\"|" ../appspec.json > final-appspec.json
+          base64 final-appspec.json > final-appspec.b64
+          cat > revision.json <<EOF
+          {
+            "applicationName": "parth-strapi-cd-app",
+            "deploymentGroupName": "parth-strapi-dg",
+            "revision": {
+              "revisionType": "AppSpecContent",
+              "appSpecContent": {
+                "content": "$(cat final-appspec.b64 | tr -d '\n')"
+              }
+            }
+          }
+          EOF
+          aws deploy create-deployment --cli-input-json file://revision.json

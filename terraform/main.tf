@@ -17,52 +17,12 @@ resource "aws_ecr_repository" "strapi" {
   name = "parth-strapi-ecr"
 }
 
-resource "aws_ecs_cluster" "this" {
+resource "aws_ecs_cluster" "ecs" {
   name = "parth-strapi-cluster"
 }
 
-resource "aws_lb" "this" {
-  name               = "parth-strapi-alb"
-  internal           = false
-  load_balancer_type = "application"
-  subnets            = data.aws_subnets.default.ids
-  security_groups    = [aws_security_group.alb.id]
-}
-
-resource "aws_lb_target_group" "blue" {
-  name        = "parth-blue-tg"
-  port        = 1337
-  protocol    = "HTTP"
-  vpc_id      = data.aws_vpc.default.id
-  target_type = "ip"
-  health_check {
-    path = "/"
-  }
-}
-
-resource "aws_lb_target_group" "green" {
-  name        = "parth-green-tg"
-  port        = 1337
-  protocol    = "HTTP"
-  vpc_id      = data.aws_vpc.default.id
-  target_type = "ip"
-  health_check {
-    path = "/"
-  }
-}
-
-resource "aws_lb_listener" "http" {
-  load_balancer_arn = aws_lb.this.arn
-  port              = 80
-  protocol          = "HTTP"
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.blue.arn
-  }
-}
-
 resource "aws_security_group" "alb" {
-  name   = "parth-alb-sg"
+  name   = "alb-sg"
   vpc_id = data.aws_vpc.default.id
 
   ingress {
@@ -88,7 +48,7 @@ resource "aws_security_group" "alb" {
 }
 
 resource "aws_security_group" "ecs" {
-  name   = "parth-ecs-sg"
+  name   = "ecs-sg"
   vpc_id = data.aws_vpc.default.id
 
   ingress {
@@ -106,16 +66,109 @@ resource "aws_security_group" "ecs" {
   }
 }
 
-resource "aws_codedeploy_app" "this" {
-  name              = "parth-strapi-codedeploy-app"
-  compute_platform  = "ECS"
+resource "aws_lb" "alb" {
+  name               = "parth-strapi-alb"
+  internal           = false
+  load_balancer_type = "application"
+  subnets            = data.aws_subnets.default.ids
+  security_groups    = [aws_security_group.alb.id]
 }
 
-resource "aws_codedeploy_deployment_group" "this" {
-  app_name              = aws_codedeploy_app.this.name
-  deployment_group_name = "parth-strapi-dg"
-  service_role_arn      = "arn:aws:iam::607700977843:role/codedeploy-service-role-p"
+resource "aws_lb_target_group" "blue" {
+  name        = "tg-blue"
+  port        = 1337
+  protocol    = "HTTP"
+  target_type = "ip"
+  vpc_id      = data.aws_vpc.default.id
 
+  health_check {
+    path                = "/"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+    matcher             = "200-399"
+  }
+}
+
+resource "aws_lb_target_group" "green" {
+  name        = "tg-green"
+  port        = 1337
+  protocol    = "HTTP"
+  target_type = "ip"
+  vpc_id      = data.aws_vpc.default.id
+
+  health_check {
+    path                = "/"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+    matcher             = "200-399"
+  }
+}
+
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.alb.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.blue.arn
+  }
+}
+
+resource "aws_codedeploy_app" "cd_app" {
+  name             = "parth-strapi-cd-app"
+  compute_platform = "ECS"
+}
+
+resource "aws_ecs_task_definition" "strapi" {
+  family                   = "parth-strapi-task"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = "arn:aws:iam::607700977843:role/ecs-task-execution-role-p"
+
+  container_definitions = jsonencode([
+    {
+      name      = "strapi"
+      image     = var.image_uri
+      essential = true
+      portMappings = [
+        {
+          containerPort = 1337
+          protocol      = "tcp"
+        }
+      ]
+    }
+  ])
+}
+
+resource "aws_ecs_service" "strapi" {
+  name            = "parth-strapi-svc"
+  cluster         = aws_ecs_cluster.ecs.id
+  desired_count   = 1
+  launch_type     = "FARGATE"
+  task_definition = aws_ecs_task_definition.strapi.arn
+
+  deployment_controller {
+    type = "CODE_DEPLOY"
+  }
+
+  network_configuration {
+    subnets          = data.aws_subnets.default.ids
+    security_groups  = [aws_security_group.ecs.id]
+    assign_public_ip = true
+  }
+}
+
+resource "aws_codedeploy_deployment_group" "cd_dg" {
+  app_name              = aws_codedeploy_app.cd_app.name
+  deployment_group_name = "parth-strapi-dg"
+  service_role_arn      = var.codedeploy_role_arn
   deployment_config_name = "CodeDeployDefault.ECSCanary10Percent5Minutes"
 
   auto_rollback_configuration {
@@ -128,15 +181,14 @@ resource "aws_codedeploy_deployment_group" "this" {
       action                            = "TERMINATE"
       termination_wait_time_in_minutes = 1
     }
-
     deployment_ready_option {
       action_on_timeout = "CONTINUE_DEPLOYMENT"
     }
   }
 
   ecs_service {
-    cluster_name = aws_ecs_cluster.this.name
-    service_name = aws_ecs_service.this.name
+    cluster_name = aws_ecs_cluster.ecs.name
+    service_name = aws_ecs_service.strapi.name
   }
 
   load_balancer_info {
@@ -151,27 +203,5 @@ resource "aws_codedeploy_deployment_group" "this" {
         listener_arns = [aws_lb_listener.http.arn]
       }
     }
-  }
-}
-
-resource "aws_ecs_service" "this" {
-  name             = "parth-strapi-service"
-  cluster          = aws_ecs_cluster.this.id
-  desired_count    = 1
-  launch_type      = "FARGATE"
-  task_definition  = "PLACEHOLDER" # overwritten via GitHub Actions
-
-  network_configuration {
-    subnets         = data.aws_subnets.default.ids
-    security_groups = [aws_security_group.ecs.id]
-    assign_public_ip = true
-  }
-
-  deployment_controller {
-    type = "CODE_DEPLOY"
-  }
-
-  lifecycle {
-    ignore_changes = [task_definition]
   }
 }
