@@ -7,7 +7,6 @@ on:
 
 jobs:
   deploy:
-    name: Deploy Strapi via CodeDeploy Blue/Green
     runs-on: ubuntu-latest
 
     env:
@@ -83,38 +82,35 @@ jobs:
             --output text)
           echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
 
-      - name: Create AppSpec file
+      - name: Create appspec.json safely using echo lines
         run: |
-          cat > appspec.json <<EOF
-{
-  "version": 1,
-  "Resources": [
-    {
-      "TargetService": {
-        "Type": "AWS::ECS::Service",
-        "Properties": {
-          "TaskDefinition": "${TASK_DEF_ARN}",
-          "LoadBalancerInfo": {
-            "ContainerName": "${CONTAINER_NAME}",
-            "ContainerPort": ${CONTAINER_PORT}
-          }
-        }
-      }
-    }
-  ]
-}
-EOF
+          echo "{" > appspec.json
+          echo '  "version": 1,' >> appspec.json
+          echo '  "Resources": [' >> appspec.json
+          echo '    {' >> appspec.json
+          echo '      "TargetService": {' >> appspec.json
+          echo '        "Type": "AWS::ECS::Service",' >> appspec.json
+          echo '        "Properties": {' >> appspec.json
+          echo "          \"TaskDefinition\": \"${TASK_DEF_ARN}\"," >> appspec.json
+          echo '          "LoadBalancerInfo": {' >> appspec.json
+          echo "            \"ContainerName\": \"${CONTAINER_NAME}\"," >> appspec.json
+          echo "            \"ContainerPort\": ${CONTAINER_PORT}" >> appspec.json
+          echo '          }' >> appspec.json
+          echo '        }' >> appspec.json
+          echo '      }' >> appspec.json
+          echo '    }' >> appspec.json
+          echo '  ]' >> appspec.json
+          echo "}" >> appspec.json
 
-      - name: Encode AppSpec to base64 and generate revision.json
+      - name: Encode AppSpec and create revision.json
         run: |
           cat appspec.json | base64 | tr -d '\n' > appspec.b64
-          cat > revision.json <<EOF
-{
-  "appSpecContent": {
-    "content": "$(cat appspec.b64)"
-  }
-}
-EOF
+          CONTENT=$(cat appspec.b64)
+          echo "{" > revision.json
+          echo '  "appSpecContent": {' >> revision.json
+          echo "    \"content\": \"${CONTENT}\"" >> revision.json
+          echo '  }' >> revision.json
+          echo "}" >> revision.json
 
       - name: Trigger CodeDeploy Deployment
         run: |
