@@ -38,7 +38,8 @@ jobs:
 
       - name: Login to Amazon ECR
         run: |
-          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin 607700977843.dkr.ecr.$AWS_REGION.amazonaws.com
+          aws ecr get-login-password --region $AWS_REGION | \
+          docker login --username AWS --password-stdin 607700977843.dkr.ecr.$AWS_REGION.amazonaws.com
 
       - name: Build and Push Docker Image
         run: |
@@ -46,6 +47,17 @@ jobs:
           docker tag $ECR_REPO:$IMAGE_TAG 607700977843.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
           docker push 607700977843.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
 
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: ./terraform
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: ./terraform
+        run: terraform apply -auto-approve
+     
       - name: Register New Task Definition
         id: register-task
         run: |
@@ -56,23 +68,20 @@ jobs:
             --requires-compatibilities FARGATE \
             --cpu "256" \
             --memory "512" \
-            --container-definitions "[
-              {
-                \"name\": \"$CONTAINER_NAME\",
-                \"image\": \"607700977843.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG\",
-                \"portMappings\": [
-                  {
-                    \"containerPort\": $CONTAINER_PORT,
-                    \"protocol\": \"tcp\"
-                  }
-                ],
-                \"essential\": true
-              }
-            ]" \
+            --container-definitions "[{
+              \"name\": \"$CONTAINER_NAME\",
+              \"image\": \"607700977843.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG\",
+              \"portMappings\": [{
+                \"containerPort\": $CONTAINER_PORT,
+                \"protocol\": \"tcp\"
+              }],
+              \"essential\": true
+            }]" \
             --query "taskDefinition.taskDefinitionArn" \
             --output text)
           echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
 
+     
       - name: Create AppSpec file
         run: |
           cat > appspec.json <<EOF
