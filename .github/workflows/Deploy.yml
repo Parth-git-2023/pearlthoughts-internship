@@ -31,6 +31,11 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Ensure ECR Repo Exists
+        run: |
+          aws ecr describe-repositories --repository-names $ECR_REPO || \
+          aws ecr create-repository --repository-name $ECR_REPO
+
       - name: Login to Amazon ECR
         run: |
           aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin 607700977843.dkr.ecr.$AWS_REGION.amazonaws.com
