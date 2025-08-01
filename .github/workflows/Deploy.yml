@@ -56,8 +56,10 @@ jobs:
 
       - name: Terraform Apply
         working-directory: ./terraform
-        run: terraform apply -auto-approve
-     
+        run: |
+          terraform apply -auto-approve \
+            -var="ecr_image_url=607700977843.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}:${{ env.IMAGE_TAG }}"
+
       - name: Register New Task Definition
         id: register-task
         run: |
