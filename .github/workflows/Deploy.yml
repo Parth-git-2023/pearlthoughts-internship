@@ -55,6 +55,34 @@ jobs:
         terraform init
         terraform apply -auto-approve -var="ecr_image_url=${{ env.image }}"
 
+    - name: Create task-def.json
+      working-directory: terraform
+      run: |
+        cat <<EOF > task-def.json
+        {
+          "family": "parth-strapi-task",
+          "executionRoleArn": "arn:aws:iam::607700977843:role/ecs-task-execution-role-p",
+          "networkMode": "awsvpc",
+          "containerDefinitions": [
+            {
+              "name": "parth-strapi",
+              "image": "${{ env.image }}",
+              "portMappings": [
+                {
+                  "containerPort": 1337,
+                  "hostPort": 1337,
+                  "protocol": "tcp"
+                }
+              ],
+              "essential": true
+            }
+          ],
+          "requiresCompatibilities": ["FARGATE"],
+          "cpu": "256",
+          "memory": "512"
+        }
+        EOF
+
     - name: Register new Task Definition
       id: register_task
       run: |

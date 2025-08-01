@@ -1,35 +1,57 @@
-name: Destroy Strapi Infrastructure
+name: Destroy ECS Resources
 
 on:
   workflow_dispatch:
 
 env:
   AWS_REGION: us-east-2
-  ECR_REPO: parth-strapi-ecr
-  TF_WORKING_DIR: terraform
+  TF_DIR: terraform
 
 jobs:
   destroy:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-    - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
 
-    - name: Terraform Init
-      working-directory: ${{ env.TF_WORKING_DIR }}
-      run: terraform init
+      - name: Initialize Terraform
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform init
 
-    - name: Terraform Destroy
-      working-directory: ${{ env.TF_WORKING_DIR }}
-      run: terraform destroy -auto-approve
+      # === STAGED DESTROY ===
+
+      - name: Destroy ECS and CodeDeploy resources
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform destroy -auto-approve \
+            -target=aws_codedeploy_deployment_group.parth \
+            -target=aws_ecs_service.parth_service \
+            -target=aws_lb_listener_rule.blue_listener_rule \
+            -target=aws_lb_listener_rule.green_listener_rule
+
+      - name: Destroy ALB
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform destroy -auto-approve -target=aws_lb.parth_alb
+
+      - name: Destroy Security Groups
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform destroy -auto-approve -target=aws_security_group.alb_sg
+          terraform destroy -auto-approve -target=aws_security_group.ecs_sg
+
+      - name: Final Cleanup
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform destroy -auto-approve
