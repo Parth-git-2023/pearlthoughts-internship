@@ -73,7 +73,8 @@ jobs:
       run: |
         sed -i "s|REPLACE_TASK_DEFINITION_ARN|${{ env.TASK_DEF_ARN }}|g" appspec.json
         BASE64_CONTENT=$(base64 appspec.json | tr -d '\n')
-        echo "{\"appSpecContent\": {\"content\": \"$BASE64_CONTENT\"}}" > revision.json
+        echo "{\"appSpecContent\": {\"content\": \"$BASE64_CONTENT\"}, \"registerWithECS\": true}" > revision.json
+
 
 
     - name: Deploy with CodeDeploy
