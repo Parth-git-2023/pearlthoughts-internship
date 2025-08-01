@@ -1,7 +1,4 @@
-variable "codedeploy_role_arn" {
-  type = string
-}
-
-variable "image_uri" {
-  type = string
+variable "ecr_image_url" {
+  description = "ECR image URI with tag"
+  type        = string
 }
