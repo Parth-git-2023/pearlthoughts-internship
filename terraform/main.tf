@@ -2,28 +2,39 @@ provider "aws" {
   region = "us-east-2"
 }
 
-resource "aws_ecs_cluster" "this" {
-  name = "parth-strapi-cluster"
+data "aws_vpc" "default" {
+  default = true
 }
 
-resource "aws_ecr_repository" "this" {
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
+resource "aws_ecr_repository" "strapi" {
   name = "parth-strapi-ecr"
+}
+
+resource "aws_ecs_cluster" "this" {
+  name = "parth-strapi-cluster"
 }
 
 resource "aws_lb" "this" {
   name               = "parth-strapi-alb"
   internal           = false
   load_balancer_type = "application"
+  subnets            = data.aws_subnets.default.ids
   security_groups    = [aws_security_group.alb.id]
-  subnets            = var.subnet_ids
 }
 
 resource "aws_lb_target_group" "blue" {
   name        = "parth-blue-tg"
   port        = 1337
   protocol    = "HTTP"
+  vpc_id      = data.aws_vpc.default.id
   target_type = "ip"
-  vpc_id      = var.vpc_id
   health_check {
     path = "/"
   }
@@ -33,8 +44,8 @@ resource "aws_lb_target_group" "green" {
   name        = "parth-green-tg"
   port        = 1337
   protocol    = "HTTP"
+  vpc_id      = data.aws_vpc.default.id
   target_type = "ip"
-  vpc_id      = var.vpc_id
   health_check {
     path = "/"
   }
@@ -51,20 +62,23 @@ resource "aws_lb_listener" "http" {
 }
 
 resource "aws_security_group" "alb" {
-  name   = "alb-sg"
-  vpc_id = var.vpc_id
+  name   = "parth-alb-sg"
+  vpc_id = data.aws_vpc.default.id
+
   ingress {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
   ingress {
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -74,14 +88,16 @@ resource "aws_security_group" "alb" {
 }
 
 resource "aws_security_group" "ecs" {
-  name   = "ecs-sg"
-  vpc_id = var.vpc_id
+  name   = "parth-ecs-sg"
+  vpc_id = data.aws_vpc.default.id
+
   ingress {
     from_port       = 1337
     to_port         = 1337
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
   }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -91,16 +107,17 @@ resource "aws_security_group" "ecs" {
 }
 
 resource "aws_codedeploy_app" "this" {
-  name = "parth-strapi-codedeploy-app"
-  compute_platform = "ECS"
+  name              = "parth-strapi-codedeploy-app"
+  compute_platform  = "ECS"
 }
 
 resource "aws_codedeploy_deployment_group" "this" {
   app_name              = aws_codedeploy_app.this.name
   deployment_group_name = "parth-strapi-dg"
-  service_role_arn      = var.codedeploy_role_arn
+  service_role_arn      = "arn:aws:iam::607700977843:role/codedeploy-service-role-p"
 
   deployment_config_name = "CodeDeployDefault.ECSCanary10Percent5Minutes"
+
   auto_rollback_configuration {
     enabled = true
     events  = ["DEPLOYMENT_FAILURE"]
@@ -130,7 +147,6 @@ resource "aws_codedeploy_deployment_group" "this" {
       target_group {
         name = aws_lb_target_group.green.name
       }
-
       prod_traffic_route {
         listener_arns = [aws_lb_listener.http.arn]
       }
@@ -139,24 +155,23 @@ resource "aws_codedeploy_deployment_group" "this" {
 }
 
 resource "aws_ecs_service" "this" {
-  name            = "parth-strapi-service"
-  cluster         = aws_ecs_cluster.this.id
-  desired_count   = 1
-  launch_type     = "FARGATE"
-  platform_version = "LATEST"
-  task_definition = "PLACEHOLDER"
+  name             = "parth-strapi-service"
+  cluster          = aws_ecs_cluster.this.id
+  desired_count    = 1
+  launch_type      = "FARGATE"
+  task_definition  = "PLACEHOLDER" # overwritten via GitHub Actions
 
   network_configuration {
-    subnets         = var.subnet_ids
+    subnets         = data.aws_subnets.default.ids
     security_groups = [aws_security_group.ecs.id]
     assign_public_ip = true
   }
 
-  lifecycle {
-    ignore_changes = [task_definition]
-  }
-
   deployment_controller {
     type = "CODE_DEPLOY"
+  }
+
+  lifecycle {
+    ignore_changes = [task_definition]
   }
 }
