@@ -1,20 +1,24 @@
-name: Destroy AWS Infra (Terraform Force Destroy)
+name: Destroy AWS Resources Forcefully
 
 on:
   workflow_dispatch:
 
 env:
   AWS_REGION: us-east-2
+  ECS_CLUSTER: parth-strapi-cluster
+  ECS_SERVICE: parth-strapi-service
+  ALB_NAME: parth-strapi-alb
+  TARGET_GROUP_BLUE: parth-strapi-tg-blue
+  TARGET_GROUP_GREEN: parth-strapi-tg-green
+  DEPLOYMENT_GROUP: parth-strapi-dg
+  CODEDEPLOY_APP: parth-strapi-app
+  ECR_REPO: parth-strapi-ecr
 
 jobs:
   destroy:
-    name: Terraform Destroy All Resources
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
@@ -22,36 +26,46 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Install Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.6.6
-
-    - name: Terraform Init
-      working-directory: terraform
-      run: terraform init
-
-    - name: Terraform Force Destroy
-      working-directory: terraform
+    - name: Force Delete ECS Service
       run: |
-        terraform destroy -auto-approve -input=false -var="ecr_image_url=dummy"
+        aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --desired-count 0 || true
+        aws ecs delete-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --force || true
 
-    - name: Delete ECR Repository Forcefully
+    - name: Delete ECS Cluster
       run: |
-        REPO_NAME="parth-strapi-ecr"
-        aws ecr delete-repository --repository-name $REPO_NAME --force || echo "ECR Repo already deleted or not found"
+        aws ecs delete-cluster --cluster $ECS_CLUSTER || true
 
-    - name: Delete CodeDeploy Application (Optional Cleanup)
+    - name: Delete Load Balancer
       run: |
-        aws deploy delete-application --application-name parth-strapi-app || echo "CodeDeploy App already deleted or not found"
-
-    - name: Delete ALB Target Groups (Optional Cleanup)
-      run: |
-        TARGET_GROUP_ARN=$(aws elbv2 describe-target-groups --names parth-strapi-tg-blue --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
-        if [ "$TARGET_GROUP_ARN" != "" ]; then
-          aws elbv2 delete-target-group --target-group-arn $TARGET_GROUP_ARN
+        ALB_ARN=$(aws elbv2 describe-load-balancers --names $ALB_NAME --query "LoadBalancers[0].LoadBalancerArn" --output text) || true
+        if [ "$ALB_ARN" != "None" ]; then
+          aws elbv2 delete-load-balancer --load-balancer-arn $ALB_ARN || true
         fi
-        TARGET_GROUP_ARN=$(aws elbv2 describe-target-groups --names parth-strapi-tg-green --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
-        if [ "$TARGET_GROUP_ARN" != "" ]; then
-          aws elbv2 delete-target-group --target-group-arn $TARGET_GROUP_ARN
-        fi
+
+    - name: Delete Target Groups
+      run: |
+        for TG in $TARGET_GROUP_BLUE $TARGET_GROUP_GREEN; do
+          TG_ARN=$(aws elbv2 describe-target-groups --names $TG --query "TargetGroups[0].TargetGroupArn" --output text) || true
+          if [ "$TG_ARN" != "None" ]; then
+            aws elbv2 delete-target-group --target-group-arn $TG_ARN || true
+          fi
+        done
+
+    - name: Delete Security Groups (if applicable)
+      run: |
+        SG_IDS=$(aws ec2 describe-security-groups --query "SecurityGroups[?GroupName=='parth-strapi-sg'].[GroupId]" --output text) || true
+        for SG_ID in $SG_IDS; do
+          aws ec2 delete-security-group --group-id $SG_ID || true
+        done
+
+    - name: Delete CodeDeploy Deployment Group
+      run: |
+        aws deploy delete-deployment-group --application-name $CODEDEPLOY_APP --deployment-group-name $DEPLOYMENT_GROUP || true
+
+    - name: Delete CodeDeploy Application
+      run: |
+        aws deploy delete-application --application-name $CODEDEPLOY_APP || true
+
+    - name: Delete ECR Repository (Optional)
+      run: |
+        aws ecr delete-repository --repository-name $ECR_REPO --force || true
