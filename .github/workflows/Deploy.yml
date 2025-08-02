@@ -69,17 +69,18 @@ jobs:
         echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
         echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
 
-    - name: Prepare AppSpec JSON
+    - name: Prepare revision.json
       run: |
         sed -i "s|REPLACE_TASK_DEFINITION_ARN|${{ steps.taskdef.outputs.task_def_arn }}|g" appspec.json
+        BASE64_CONTENT=$(base64 appspec.json | tr -d '\n')
+        echo "{\"revisionType\": \"AppSpecContent\", \"appSpecContent\": {\"content\": \"$BASE64_CONTENT\"}}" > revision.json
 
     - name: Deploy with CodeDeploy
       run: |
-        BASE64_CONTENT=$(base64 appspec.json | tr -d '\n')
         aws deploy create-deployment \
           --application-name $CODEDEPLOY_APP \
           --deployment-group-name $DEPLOYMENT_GROUP \
-          --revision "{\"appSpecContent\": {\"content\": \"$BASE64_CONTENT\"}}" \
+          --revision file://revision.json \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
           --region $AWS_REGION
 
