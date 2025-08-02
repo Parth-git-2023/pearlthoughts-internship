@@ -85,4 +85,4 @@ jobs:
           --region $AWS_REGION
 
     - name: Deployment Triggered Successfully
-      run: echo "CodeDeploy deployment triggered with TaskDef: ${{ steps.taskdef.outputs.task_def_arn }}"
+      run: echo "CodeDeploy deployment triggered with TaskDef:${{ steps.taskdef.outputs.task_def_arn }}"
