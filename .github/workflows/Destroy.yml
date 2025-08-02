@@ -1,0 +1,69 @@
+name: Destroy AWS Infrastructure
+
+on:
+  workflow_dispatch:  # Run manually from Actions tab
+
+env:
+  AWS_REGION: us-east-2
+
+jobs:
+  destroy:
+    name: Destroy All Resources via Terraform
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Install Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.6.6
+
+    - name: Terraform Init
+      working-directory: terraform
+      run: terraform init
+
+    - name: Force Delete ECS Service (Skip Wait)
+      run: |
+        CLUSTER_NAME="parth-strapi-cluster"
+        SERVICE_NAME="parth-strapi-service"
+        aws ecs update-service --cluster $CLUSTER_NAME --service $SERVICE_NAME --desired-count 0 || true
+        aws ecs delete-service --cluster $CLUSTER_NAME --service $SERVICE_NAME --force || true
+
+    - name: Force Delete CodeDeploy Deployment Group & App
+      run: |
+        DEPLOYMENT_GROUP="parth-strapi-dg"
+        APP_NAME="parth-strapi-app"
+        aws deploy delete-deployment-group --application-name $APP_NAME --deployment-group-name $DEPLOYMENT_GROUP || true
+        aws deploy delete-application --application-name $APP_NAME || true
+
+    - name: Terraform Destroy All
+      working-directory: terraform
+      run: terraform destroy -auto-approve
+
+    - name: Destroy ECR Repository (Force Delete Images)
+      run: |
+        REPO_NAME="parth-strapi-ecr"
+        IMAGE_IDS=$(aws ecr list-images --repository-name $REPO_NAME --query 'imageIds[*]' --output json)
+        if [ "$IMAGE_IDS" != "[]" ]; then
+          aws ecr batch-delete-image --repository-name $REPO_NAME --image-ids "$IMAGE_IDS" || true
+        fi
+        aws ecr delete-repository --repository-name $REPO_NAME --force || true
+
+    - name: Destroy ALB Orphans (Just In Case)
+      run: |
+        aws elbv2 describe-load-balancers --query "LoadBalancers[?contains(DNSName, 'parth-strapi')].[LoadBalancerArn]" --output text | \
+        xargs -I {} aws elbv2 delete-load-balancer --load-balancer-arn {} || true
+
+    - name: Destroy Security Groups Orphans (Just In Case)
+      run: |
+        aws ec2 describe-security-groups --query "SecurityGroups[?GroupName=='parth-strapi-sg'].[GroupId]" --output text | \
+        xargs -I {} aws ec2 delete-security-group --group-id {} || true
