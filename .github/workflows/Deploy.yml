@@ -71,11 +71,9 @@ jobs:
 
     - name: Prepare AppSpec JSON
       run: |
-        sed -i "s|REPLACE_TASK_DEFINITION_ARN|${{ env.TASK_DEF_ARN }}|g" appspec.json
+        sed -i "s|REPLACE_TASK_DEFINITION_ARN|${{ steps.taskdef.outputs.task_def_arn }}|g" appspec.json
         BASE64_CONTENT=$(base64 appspec.json | tr -d '\n')
         echo "{\"appSpecContent\": {\"content\": \"$BASE64_CONTENT\"}, \"registerWithECS\": true}" > revision.json
-
-
 
     - name: Deploy with CodeDeploy
       run: |
@@ -85,3 +83,6 @@ jobs:
           --revision file://revision.json \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
           --region $AWS_REGION
+
+    - name: Deployment Triggered Successfully
+      run: echo "CodeDeploy deployment triggered with AppSpec JSON and new TaskDef: ${{ steps.taskdef.outputs.task_def_arn }}"
