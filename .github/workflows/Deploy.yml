@@ -1,14 +1,23 @@
-name: Destroy AWS Infra (Terraform Force Destroy)
+name: Deploy to ECS Fargate with Blue/Green
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main
 
 env:
   AWS_REGION: us-east-2
+  ECR_REPO: parth-strapi-ecr
+  ECR_ACCOUNT: 607700977843
+  ECS_CLUSTER: parth-strapi-cluster
+  ECS_SERVICE: parth-strapi-service
+  TASK_FAMILY: parth-strapi-task
+  DEPLOYMENT_GROUP: parth-strapi-dg
+  CODEDEPLOY_APP: parth-strapi-app
 
 jobs:
-  destroy:
-    name: Terraform Destroy All Resources
+  deploy:
+    name: Deploy Strapi via CodeDeploy Blue/Green
     runs-on: ubuntu-latest
 
     steps:
@@ -22,6 +31,23 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
+    - name: Ensure ECR Repo Exists
+      run: |
+        aws ecr describe-repositories --repository-names $ECR_REPO || \
+        aws ecr create-repository --repository-name $ECR_REPO
+
+    - name: Login to Amazon ECR
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build & Push Docker image
+      run: |
+        TIMESTAMP=$(date +%s)
+        IMAGE_TAG=parth-strapi-$TIMESTAMP
+        ECR_URI=${{ env.ECR_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}
+        docker build -t $ECR_URI:$IMAGE_TAG ./strapi-app
+        docker push $ECR_URI:$IMAGE_TAG
+        echo "IMAGE_URI=$ECR_URI:$IMAGE_TAG" >> $GITHUB_ENV
+
     - name: Install Terraform
       uses: hashicorp/setup-terraform@v3
       with:
@@ -31,27 +57,33 @@ jobs:
       working-directory: terraform
       run: terraform init
 
-    - name: Terraform Force Destroy
+    - name: Terraform Apply
       working-directory: terraform
-      run: |
-        terraform destroy -auto-approve -input=false -var="ecr_image_url=dummy"
+      run: terraform apply -auto-approve -var="ecr_image_url=${{ env.IMAGE_URI }}"
 
-    - name: Delete ECR Repository Forcefully
+    - name: Get New Task Definition ARN
+      id: taskdef
       run: |
-        REPO_NAME="parth-strapi-ecr"
-        aws ecr delete-repository --repository-name $REPO_NAME --force || echo "ECR Repo already deleted or not found"
+        TASK_DEF_ARN=$(aws ecs describe-task-definition --task-definition $TASK_FAMILY \
+          --query "taskDefinition.taskDefinitionArn" --output text)
+        echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
+        echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
 
-    - name: Delete CodeDeploy Application (Optional Cleanup)
+    - name: Prepare AppSpec JSON
       run: |
-        aws deploy delete-application --application-name parth-strapi-app || echo "CodeDeploy App already deleted or not found"
+        sed -i "s|REPLACE_TASK_DEFINITION_ARN|${{ steps.taskdef.outputs.task_def_arn }}|g" appspec.json
+        BASE64_CONTENT=$(base64 appspec.json | tr -d '\n')
+        echo "{\"appSpecContent\": {\"content\": \"$BASE64_CONTENT\"}}" > revision.json
 
-    - name: Delete ALB Target Groups (Optional Cleanup)
+    - name: Deploy with CodeDeploy
       run: |
-        TARGET_GROUP_ARN=$(aws elbv2 describe-target-groups --names parth-strapi-tg-blue --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
-        if [ "$TARGET_GROUP_ARN" != "" ]; then
-          aws elbv2 delete-target-group --target-group-arn $TARGET_GROUP_ARN
-        fi
-        TARGET_GROUP_ARN=$(aws elbv2 describe-target-groups --names parth-strapi-tg-green --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
-        if [ "$TARGET_GROUP_ARN" != "" ]; then
-          aws elbv2 delete-target-group --target-group-arn $TARGET_GROUP_ARN
-        fi
+        BASE64_CONTENT=$(base64 appspec.json | tr -d '\n')
+        aws deploy create-deployment \
+          --application-name $CODEDEPLOY_APP \
+          --deployment-group-name $DEPLOYMENT_GROUP \
+          --revision "{\"appSpecContent\": {\"content\": \"$BASE64_CONTENT\"}}" \
+          --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
+          --region $AWS_REGION
+
+    - name: Deployment Triggered Successfully
+      run: echo "CodeDeploy deployment triggered with AppSpec JSON and new TaskDef:${{ steps.taskdef.outputs.task_def_arn }}"
