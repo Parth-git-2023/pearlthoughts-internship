@@ -67,37 +67,44 @@ jobs:
         echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
         echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
 
-    - name: Prepare AppSpec.yaml
+    - name: Prepare AppSpecContent as Base64
+      id: appspec_base64
       run: |
-        echo "version: 1" > appspec.yaml
-        echo "Resources:" >> appspec.yaml
-        echo "  - TargetService:" >> appspec.yaml
-        echo "      Type: AWS::ECS::Service" >> appspec.yaml
-        echo "      Properties:" >> appspec.yaml
-        echo "        TaskDefinition: ${{ steps.taskdef.outputs.task_def_arn }}" >> appspec.yaml
-        echo "        LoadBalancerInfo:" >> appspec.yaml
-        echo "          ContainerName: ${{ env.CONTAINER_NAME }}" >> appspec.yaml
-        echo "          ContainerPort: 1337" >> appspec.yaml
-
-    - name: Convert AppSpec.yaml to JSON-safe string
-      id: appspec_json
-      run: |
-        APPSPEC_CONTENT=$(cat appspec.yaml | jq -Rs .)
-        echo "APPSPEC_CONTENT=$APPSPEC_CONTENT" >> $GITHUB_ENV
-
-    - name: Generate deployment.json for CodeDeploy
-      run: |
-        echo "{" > deployment.json
-        echo "  \"applicationName\": \"${{ env.CODEDEPLOY_APP }}\"," >> deployment.json
-        echo "  \"deploymentGroupName\": \"${{ env.DEPLOYMENT_GROUP }}\"," >> deployment.json
-        echo "  \"revision\": {" >> deployment.json
-        echo "    \"revisionType\": \"AppSpecContent\"," >> deployment.json
-        echo "    \"appSpecContent\": {" >> deployment.json
-        echo "      \"content\": ${{ env.APPSPEC_CONTENT }}" >> deployment.json
-        echo "    }" >> deployment.json
-        echo "  }" >> deployment.json
-        echo "}" >> deployment.json
+        cat <<EOF > appspec.yaml
+        version: 1
+        Resources:
+          - TargetService:
+              Type: AWS::ECS::Service
+              Properties:
+                TaskDefinition: ${{ steps.taskdef.outputs.task_def_arn }}
+                LoadBalancerInfo:
+                  ContainerName: ${{ env.CONTAINER_NAME }}
+                  ContainerPort: 1337
+        EOF
+        APPSPEC_BASE64=$(base64 -w 0 appspec.yaml)
+        echo "APPSPEC_BASE64=$APPSPEC_BASE64" >> $GITHUB_ENV
 
     - name: Trigger CodeDeploy Deployment
       run: |
-        aws deploy create-deployment --cli-input-json file://deployment.json
+        aws deploy create-deployment \
+          --application-name $CODEDEPLOY_APP \
+          --deployment-group-name $DEPLOYMENT_GROUP \
+          --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
+          --revision revisionType=AppSpecContent,appSpecContent={content=$APPSPEC_BASE64}
+
+    - name: Monitor Deployment Status
+      run: |
+        DEPLOYMENT_ID=$(aws deploy list-deployments --application-name $CODEDEPLOY_APP --deployment-group-name $DEPLOYMENT_GROUP --query 'deployments[0]' --output text)
+        echo "Deployment ID: $DEPLOYMENT_ID"
+
+        STATUS="InProgress"
+        while [ "$STATUS" == "InProgress" ]; do
+          STATUS=$(aws deploy get-deployment --deployment-id $DEPLOYMENT_ID --query 'deploymentInfo.status' --output text)
+          echo "Current Deployment Status: $STATUS"
+          sleep 15
+        done
+
+        if [ "$STATUS" != "Succeeded" ]; then
+          echo "Deployment Failed! Exiting..."
+          exit 1
+        fi
