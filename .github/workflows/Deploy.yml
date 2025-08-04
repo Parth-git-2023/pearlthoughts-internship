@@ -12,12 +12,11 @@ env:
   ECS_CLUSTER: parth-strapi-cluster
   ECS_SERVICE: parth-strapi-service
   TASK_FAMILY: parth-strapi-task
-  DEPLOYMENT_GROUP: parth-strapi-dg
+  DEPLOYMENT_GROUP: parth-dg
   CODEDEPLOY_APP: parth-strapi-app
 
 jobs:
   deploy:
-    name: Deploy Strapi via CodeDeploy Blue/Green
     runs-on: ubuntu-latest
 
     steps:
@@ -39,10 +38,9 @@ jobs:
     - name: Login to Amazon ECR
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build & Push Docker image
+    - name: Build & Push Docker image with GitHub SHA Tag
       run: |
-        TIMESTAMP=$(date +%s)
-        IMAGE_TAG=parth-strapi-$TIMESTAMP
+        IMAGE_TAG=${{ github.sha }}
         ECR_URI=${{ env.ECR_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}
         docker build -t $ECR_URI:$IMAGE_TAG ./strapi-app
         docker push $ECR_URI:$IMAGE_TAG
@@ -57,25 +55,40 @@ jobs:
       working-directory: terraform
       run: terraform init
 
-    - name: Terraform Apply
+    - name: Terraform Apply with Dynamic Image URL
       working-directory: terraform
       run: terraform apply -auto-approve -var="ecr_image_url=${{ env.IMAGE_URI }}"
 
-    - name: Get New Task Definition ARN
+    - name: Wait and Fetch New Task Definition ARN
       id: taskdef
       run: |
-        TASK_DEF_ARN=$(aws ecs describe-task-definition --task-definition $TASK_FAMILY \
-          --query "taskDefinition.taskDefinitionArn" --output text)
-        echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
-        echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
+        echo "Fetching Task Definition ARN..."
+        for i in {1..10}; do
+          TASK_DEF_ARN=$(aws ecs describe-task-definition --task-definition $TASK_FAMILY --query "taskDefinition.taskDefinitionArn" --output text || echo "None")
+          echo "Attempt $i: $TASK_DEF_ARN"
+          if [[ "$TASK_DEF_ARN" != "None" ]]; then
+            echo "Found Task Definition ARN: $TASK_DEF_ARN"
+            echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
+            echo "::set-output name=task_def_arn::$TASK_DEF_ARN"
+            break
+          fi
+          echo "Task Definition not available yet. Retrying in 10s..."
+          sleep 10
+        done
 
-    - name: Prepare AppSpec YAML (Inject Task ARN)
+        if [[ "$TASK_DEF_ARN" == "None" ]]; then
+          echo "Failed to fetch Task Definition ARN after retries."
+          exit 1
+        fi
+
+    - name: Replace Task ARN in AppSpec YAML
       run: |
         sed -i "s|REPLACE_TASK_DEFINITION_ARN|${{ steps.taskdef.outputs.task_def_arn }}|g" appspec.yaml
+        cat appspec.yaml
 
     - name: Deploy with CodeDeploy (YAML Inline)
       run: |
-        BASE64_CONTENT=$(base64 appspec.yaml | tr -d '\n')
+        BASE64_CONTENT=$(base64 -w 0 appspec.yaml)
         aws deploy create-deployment \
           --application-name $CODEDEPLOY_APP \
           --deployment-group-name $DEPLOYMENT_GROUP \
@@ -83,5 +96,19 @@ jobs:
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
           --region $AWS_REGION
 
-    - name: Deployment Triggered Successfully
-      run: echo "Deployment Triggered with TaskDef:${{ steps.taskdef.outputs.task_def_arn }}"
+    - name: Monitor Deployment Status
+      run: |
+        DEPLOYMENT_ID=$(aws deploy list-deployments --application-name $CODEDEPLOY_APP --deployment-group-name $DEPLOYMENT_GROUP --query 'deployments[0]' --output text)
+        echo "Deployment ID: $DEPLOYMENT_ID"
+
+        STATUS="InProgress"
+        while [ "$STATUS" == "InProgress" ]; do
+          STATUS=$(aws deploy get-deployment --deployment-id $DEPLOYMENT_ID --query 'deploymentInfo.status' --output text)
+          echo "Current Deployment Status: $STATUS"
+          sleep 15
+        done
+
+        if [ "$STATUS" != "Succeeded" ]; then
+          echo "Deployment Failed! Exiting..."
+          exit 1
+        fi

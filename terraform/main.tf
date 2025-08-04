@@ -69,7 +69,7 @@ resource "aws_lb" "parth_alb" {
   security_groups    = [aws_security_group.alb_sg.id]
 }
 
-# Target Groups (Blue and Green)
+# Target Groups
 resource "aws_lb_target_group" "parth_tg_blue" {
   name        = "parth-strapi-blue"
   port        = 1337
@@ -114,14 +114,14 @@ resource "aws_lb_listener" "parth_listener" {
     type = "forward"
     forward {
       target_group {
-        arn = aws_lb_target_group.parth_tg_blue.arn
+        arn    = aws_lb_target_group.parth_tg_blue.arn
         weight = 1
       }
     }
   }
 }
 
-# ECS Task Definition (placeholder)
+# ECS Task Definition (dynamic image URL passed)
 resource "aws_ecs_task_definition" "parth_task" {
   family                   = "parth-strapi-task"
   requires_compatibilities = ["FARGATE"]
@@ -140,20 +140,21 @@ resource "aws_ecs_task_definition" "parth_task" {
   }])
 }
 
-# ECS Service
+# ECS Service (CodeDeploy controlled)
 resource "aws_ecs_service" "parth_service" {
   name            = "parth-strapi-service"
   cluster         = aws_ecs_cluster.parth_cluster.id
   task_definition = aws_ecs_task_definition.parth_task.arn
   launch_type     = "FARGATE"
   desired_count   = 1
+
   deployment_controller {
     type = "CODE_DEPLOY"
   }
 
   network_configuration {
-    subnets         = [data.aws_subnet.subnet1.id, data.aws_subnet.subnet2.id]
-    security_groups = [aws_security_group.ecs_service_sg.id]
+    subnets          = [data.aws_subnet.subnet1.id, data.aws_subnet.subnet2.id]
+    security_groups  = [aws_security_group.ecs_service_sg.id]
     assign_public_ip = true
   }
 
@@ -166,17 +167,16 @@ resource "aws_ecs_service" "parth_service" {
   depends_on = [aws_lb_listener.parth_listener]
 }
 
-# CodeDeploy Application
+# CodeDeploy Application & Deployment Group
 resource "aws_codedeploy_app" "parth_codedeploy_app" {
-  name = "parth-strapi-app"
-  compute_platform = "ECS"
+  name              = "parth-strapi-app"
+  compute_platform  = "ECS"
 }
 
-# CodeDeploy Deployment Group
 resource "aws_codedeploy_deployment_group" "parth_deployment_group" {
-  app_name               = aws_codedeploy_app.parth_codedeploy_app.name
-  deployment_group_name  = "parth-strapi-dg"
-  service_role_arn       = "arn:aws:iam::607700977843:role/codedeploy-service-role-p"
+  app_name              = aws_codedeploy_app.parth_codedeploy_app.name
+  deployment_group_name = "parth-dg"
+  service_role_arn      = "arn:aws:iam::607700977843:role/codedeploy-service-role-p"
 
   deployment_config_name = "CodeDeployDefault.ECSCanary10Percent5Minutes"
 
