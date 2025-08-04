@@ -79,12 +79,13 @@ jobs:
       run: |
         sed "s|REPLACE_TASK_DEFINITION_ARN|${{ env.TASK_DEF_ARN }}|g" appspec.yaml > final-appspec.yaml
 
-    - name: Read & Escape YAML AppSpec as JSON String
+    - name: Convert AppSpec YAML to JSON Literal String (jq -Rs)
+      id: appspec-json
       run: |
         APPSPEC_CONTENT=$(cat final-appspec.yaml | jq -Rs .)
         echo "APPSPEC_CONTENT=$APPSPEC_CONTENT" >> $GITHUB_ENV
 
-    - name: Trigger CodeDeploy Deployment (YAML AppSpecContent)
+    - name: Trigger CodeDeploy Deployment with AppSpecContent
       run: |
         aws deploy create-deployment \
           --application-name ${{ env.CODEDEPLOY_APP_NAME }} \
