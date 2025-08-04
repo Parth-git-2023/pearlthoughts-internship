@@ -69,17 +69,15 @@ jobs:
 
     - name: Prepare AppSpec.yaml
       run: |
-        cat <<EOF > appspec.yaml
-version: 1
-Resources:
-  - TargetService:
-      Type: AWS::ECS::Service
-      Properties:
-        TaskDefinition: ${{ steps.taskdef.outputs.task_def_arn }}
-        LoadBalancerInfo:
-          ContainerName: ${{ env.CONTAINER_NAME }}
-          ContainerPort: 1337
-EOF
+        echo "version: 1" > appspec.yaml
+        echo "Resources:" >> appspec.yaml
+        echo "  - TargetService:" >> appspec.yaml
+        echo "      Type: AWS::ECS::Service" >> appspec.yaml
+        echo "      Properties:" >> appspec.yaml
+        echo "        TaskDefinition: ${{ steps.taskdef.outputs.task_def_arn }}" >> appspec.yaml
+        echo "        LoadBalancerInfo:" >> appspec.yaml
+        echo "          ContainerName: ${{ env.CONTAINER_NAME }}" >> appspec.yaml
+        echo "          ContainerPort: 1337" >> appspec.yaml
 
     - name: Convert AppSpec.yaml to JSON-safe string
       id: appspec_json
@@ -87,21 +85,19 @@ EOF
         APPSPEC_CONTENT=$(cat appspec.yaml | jq -Rs .)
         echo "APPSPEC_CONTENT=$APPSPEC_CONTENT" >> $GITHUB_ENV
 
-    - name: Generate Deployment JSON
+    - name: Generate deployment.json for CodeDeploy
       run: |
-        cat <<EOF > deployment.json
-{
-  "applicationName": "$CODEDEPLOY_APP",
-  "deploymentGroupName": "$DEPLOYMENT_GROUP",
-  "revision": {
-    "revisionType": "AppSpecContent",
-    "appSpecContent": {
-      "content": ${{ env.APPSPEC_CONTENT }}
-    }
-  }
-}
-EOF
+        echo "{" > deployment.json
+        echo "  \"applicationName\": \"${{ env.CODEDEPLOY_APP }}\"," >> deployment.json
+        echo "  \"deploymentGroupName\": \"${{ env.DEPLOYMENT_GROUP }}\"," >> deployment.json
+        echo "  \"revision\": {" >> deployment.json
+        echo "    \"revisionType\": \"AppSpecContent\"," >> deployment.json
+        echo "    \"appSpecContent\": {" >> deployment.json
+        echo "      \"content\": ${{ env.APPSPEC_CONTENT }}" >> deployment.json
+        echo "    }" >> deployment.json
+        echo "  }" >> deployment.json
+        echo "}" >> deployment.json
 
-    - name: Trigger CodeDeploy Deployment (from JSON file)
+    - name: Trigger CodeDeploy Deployment
       run: |
         aws deploy create-deployment --cli-input-json file://deployment.json
