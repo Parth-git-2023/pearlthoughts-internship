@@ -67,20 +67,19 @@ jobs:
         echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
         echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
 
-    - name: Prepare AppSpecContent as Base64
+        - name: Prepare AppSpecContent as Base64
       id: appspec_base64
       run: |
-        cat <<EOF > appspec.yaml
-        version: 1
-        Resources:
-          - TargetService:
-              Type: AWS::ECS::Service
-              Properties:
-                TaskDefinition: ${{ steps.taskdef.outputs.task_def_arn }}
-                LoadBalancerInfo:
-                  ContainerName: ${{ env.CONTAINER_NAME }}
-                  ContainerPort: 1337
-        EOF
+        echo "version: 1" > appspec.yaml
+        echo "Resources:" >> appspec.yaml
+        echo "  - TargetService:" >> appspec.yaml
+        echo "      Type: AWS::ECS::Service" >> appspec.yaml
+        echo "      Properties:" >> appspec.yaml
+        echo "        TaskDefinition: ${{ steps.taskdef.outputs.task_def_arn }}" >> appspec.yaml
+        echo "        LoadBalancerInfo:" >> appspec.yaml
+        echo "          ContainerName: ${{ env.CONTAINER_NAME }}" >> appspec.yaml
+        echo "          ContainerPort: 1337" >> appspec.yaml
+        
         APPSPEC_BASE64=$(base64 -w 0 appspec.yaml)
         echo "APPSPEC_BASE64=$APPSPEC_BASE64" >> $GITHUB_ENV
 
