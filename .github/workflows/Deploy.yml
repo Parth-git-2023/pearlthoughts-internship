@@ -67,7 +67,7 @@ jobs:
         echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
         echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
 
-        - name: Prepare AppSpecContent as Base64
+    - name: Prepare AppSpecContent as Base64
       id: appspec_base64
       run: |
         echo "version: 1" > appspec.yaml
