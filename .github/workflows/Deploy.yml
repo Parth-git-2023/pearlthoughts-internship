@@ -77,7 +77,7 @@ jobs:
 
     - name: Prepare AppSpec YAML with Task ARN
       run: |
-        sed "s|REPLACE_TASK_DEFINITION_ARN|${{ env.TASK_DEF_ARN }}|g" appspec.yaml > appspec.yaml
+        sed "s|REPLACE_TASK_DEFINITION_ARN|${{ env.TASK_DEF_ARN }}|g" appspec.yaml > final-appspec.yaml
 
     - name: Convert AppSpec YAML to JSON Literal String (jq -Rs)
       id: appspec-json
