@@ -1,4 +1,4 @@
-name: Full Deploy Flow — ECR > Docker Build > Terraform > CodeDeploy (YAML AppSpec)
+name: Deploy Strapi to ECS (Final)
 
 on:
   push:
@@ -9,11 +9,11 @@ env:
   AWS_REGION: us-east-2
   ECR_REPO: parth-strapi-ecr
   ECR_ACCOUNT: 607700977843
-  ECS_CLUSTER_NAME: parth-strapi-cluster
-  ECS_SERVICE_NAME: parth-strapi-service
-  ECS_TASK_FAMILY: parth-strapi-task
-  CODEDEPLOY_APP_NAME: parth-strapi-app
-  CODEDEPLOY_GROUP_NAME: parth-dg
+  ECS_CLUSTER: parth-strapi-cluster
+  ECS_SERVICE: parth-strapi-service
+  TASK_FAMILY: parth-strapi-task
+  CODEDEPLOY_APP: parth-strapi-app
+  DEPLOYMENT_GROUP: parth-dg
   CONTAINER_NAME: strapi
 
 jobs:
@@ -21,10 +21,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Code
+    - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Configure AWS Credentials
+    - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -39,7 +39,7 @@ jobs:
     - name: Login to Amazon ECR
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build and Push Docker Image
+    - name: Build & Push Docker image
       run: |
         IMAGE_TAG=${{ github.sha }}
         ECR_URI=${{ env.ECR_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}
@@ -47,7 +47,7 @@ jobs:
         docker push $ECR_URI:$IMAGE_TAG
         echo "IMAGE_URI=$ECR_URI:$IMAGE_TAG" >> $GITHUB_ENV
 
-    - name: Install Terraform
+    - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.6.6
@@ -56,48 +56,52 @@ jobs:
       working-directory: terraform
       run: terraform init
 
-    - name: Terraform Apply with ECR Image URL
+    - name: Terraform Apply (Deploy Infra)
       working-directory: terraform
       run: terraform apply -auto-approve -var="ecr_image_url=${{ env.IMAGE_URI }}"
 
-    - name: Render New ECS Task Definition File
-      id: render-task-def
-      uses: aws-actions/amazon-ecs-render-task-definition@v1
-      with:
-        task-definition: ecs-task-definition.json
-        container-name: ${{ env.CONTAINER_NAME }}
-        image: ${{ env.IMAGE_URI }}
-
-    - name: Register New Task Definition
-      id: register-task
+    - name: Get Latest Task Definition ARN
+      id: taskdef
       run: |
-        TASK_DEF_PATH="${{ steps.render-task-def.outputs.task-definition }}"
-        TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://$TASK_DEF_PATH --query 'taskDefinition.taskDefinitionArn' --output text)
+        TASK_DEF_ARN=$(aws ecs describe-task-definition --task-definition $TASK_FAMILY --query "taskDefinition.taskDefinitionArn" --output text)
         echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
+        echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
 
-    - name: Prepare AppSpec YAML with Task ARN
+    - name: Prepare AppSpec.yaml
       run: |
-        sed "s|REPLACE_TASK_DEFINITION_ARN|${{ env.TASK_DEF_ARN }}|g" appspec.yaml > final-appspec.yaml
+        cat <<EOF > appspec.yaml
+version: 1
+Resources:
+  - TargetService:
+      Type: AWS::ECS::Service
+      Properties:
+        TaskDefinition: ${{ steps.taskdef.outputs.task_def_arn }}
+        LoadBalancerInfo:
+          ContainerName: ${{ env.CONTAINER_NAME }}
+          ContainerPort: 1337
+EOF
 
-    - name: Convert AppSpec YAML to JSON Literal String (jq -Rs)
-      id: appspec-json
+    - name: Convert AppSpec.yaml to JSON-safe string
+      id: appspec_json
       run: |
-        APPSPEC_CONTENT=$(cat final-appspec.yaml | jq -Rs .)
+        APPSPEC_CONTENT=$(cat appspec.yaml | jq -Rs .)
         echo "APPSPEC_CONTENT=$APPSPEC_CONTENT" >> $GITHUB_ENV
 
-    - name: Trigger CodeDeploy Deployment with AppSpecContent
+    - name: Generate Deployment JSON
       run: |
-        aws deploy create-deployment \
-          --application-name ${{ env.CODEDEPLOY_APP_NAME }} \
-          --deployment-group-name ${{ env.CODEDEPLOY_GROUP_NAME }} \
-          --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
-          --cli-input-json "{
-            \"applicationName\": \"${{ env.CODEDEPLOY_APP_NAME }}\",
-            \"deploymentGroupName\": \"${{ env.CODEDEPLOY_GROUP_NAME }}\",
-            \"revision\": {
-              \"revisionType\": \"AppSpecContent\",
-              \"appSpecContent\": {
-                \"content\": ${{ env.APPSPEC_CONTENT }}
-              }
-            }
-          }"
+        cat <<EOF > deployment.json
+{
+  "applicationName": "$CODEDEPLOY_APP",
+  "deploymentGroupName": "$DEPLOYMENT_GROUP",
+  "revision": {
+    "revisionType": "AppSpecContent",
+    "appSpecContent": {
+      "content": ${{ env.APPSPEC_CONTENT }}
+    }
+  }
+}
+EOF
+
+    - name: Trigger CodeDeploy Deployment (from JSON file)
+      run: |
+        aws deploy create-deployment --cli-input-json file://deployment.json
