@@ -1,4 +1,4 @@
-name: Deploy Strapi to ECS (Final)
+name: Deploy to ECS Fargate with Blue/Green
 
 on:
   push:
@@ -12,9 +12,8 @@ env:
   ECS_CLUSTER: parth-strapi-cluster
   ECS_SERVICE: parth-strapi-service
   TASK_FAMILY: parth-strapi-task
-  CODEDEPLOY_APP: parth-strapi-app
   DEPLOYMENT_GROUP: parth-dg
-  CONTAINER_NAME: strapi
+  CODEDEPLOY_APP: parth-strapi-app
 
 jobs:
   deploy:
@@ -39,7 +38,7 @@ jobs:
     - name: Login to Amazon ECR
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build & Push Docker image
+    - name: Build & Push Docker image with GitHub SHA Tag
       run: |
         IMAGE_TAG=${{ github.sha }}
         ECR_URI=${{ env.ECR_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}
@@ -47,7 +46,7 @@ jobs:
         docker push $ECR_URI:$IMAGE_TAG
         echo "IMAGE_URI=$ECR_URI:$IMAGE_TAG" >> $GITHUB_ENV
 
-    - name: Setup Terraform
+    - name: Install Terraform
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.6.6
@@ -56,40 +55,46 @@ jobs:
       working-directory: terraform
       run: terraform init
 
-    - name: Terraform Apply (Deploy Infra)
+    - name: Terraform Apply with Dynamic Image URL
       working-directory: terraform
       run: terraform apply -auto-approve -var="ecr_image_url=${{ env.IMAGE_URI }}"
 
-    - name: Get Latest Task Definition ARN
+    - name: Wait and Fetch New Task Definition ARN
       id: taskdef
       run: |
-        TASK_DEF_ARN=$(aws ecs describe-task-definition --task-definition $TASK_FAMILY --query "taskDefinition.taskDefinitionArn" --output text)
-        echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
-        echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
+        echo "Fetching Task Definition ARN..."
+        for i in {1..10}; do
+          TASK_DEF_ARN=$(aws ecs describe-task-definition --task-definition $TASK_FAMILY --query "taskDefinition.taskDefinitionArn" --output text || echo "None")
+          echo "Attempt $i: $TASK_DEF_ARN"
+          if [[ "$TASK_DEF_ARN" != "None" ]]; then
+            echo "Found Task Definition ARN: $TASK_DEF_ARN"
+            echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
+            echo "::set-output name=task_def_arn::$TASK_DEF_ARN"
+            break
+          fi
+          echo "Task Definition not available yet. Retrying in 10s..."
+          sleep 10
+        done
 
-    - name: Prepare AppSpecContent as Base64
-      id: appspec_base64
-      run: |
-        echo "version: 1" > appspec.yaml
-        echo "Resources:" >> appspec.yaml
-        echo "  - TargetService:" >> appspec.yaml
-        echo "      Type: AWS::ECS::Service" >> appspec.yaml
-        echo "      Properties:" >> appspec.yaml
-        echo "        TaskDefinition: ${{ steps.taskdef.outputs.task_def_arn }}" >> appspec.yaml
-        echo "        LoadBalancerInfo:" >> appspec.yaml
-        echo "          ContainerName: ${{ env.CONTAINER_NAME }}" >> appspec.yaml
-        echo "          ContainerPort: 1337" >> appspec.yaml
-        
-        APPSPEC_BASE64=$(base64 -w 0 appspec.yaml)
-        echo "APPSPEC_BASE64=$APPSPEC_BASE64" >> $GITHUB_ENV
+        if [[ "$TASK_DEF_ARN" == "None" ]]; then
+          echo "Failed to fetch Task Definition ARN after retries."
+          exit 1
+        fi
 
-    - name: Trigger CodeDeploy Deployment
+    - name: Replace Task ARN in AppSpec YAML
       run: |
+        sed -i "s|REPLACE_TASK_DEFINITION_ARN|${{ steps.taskdef.outputs.task_def_arn }}|g" appspec.yaml
+        cat appspec.yaml
+
+    - name: Deploy with CodeDeploy (YAML Inline)
+      run: |
+        BASE64_CONTENT=$(base64 -w 0 appspec.yaml)
         aws deploy create-deployment \
           --application-name $CODEDEPLOY_APP \
           --deployment-group-name $DEPLOYMENT_GROUP \
+          --revision revisionType=AppSpecContent,appSpecContent="{content=$BASE64_CONTENT}" \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
-          --revision revisionType=AppSpecContent,appSpecContent={content=$APPSPEC_BASE64}
+          --region $AWS_REGION
 
     - name: Monitor Deployment Status
       run: |
