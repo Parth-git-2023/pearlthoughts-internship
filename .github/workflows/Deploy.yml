@@ -1,4 +1,4 @@
-name: Deploy to ECS Fargate with Blue/Green
+name: Full Deploy Flow — ECR > Docker Build > Terraform > CodeDeploy (YAML AppSpec)
 
 on:
   push:
@@ -9,21 +9,22 @@ env:
   AWS_REGION: us-east-2
   ECR_REPO: parth-strapi-ecr
   ECR_ACCOUNT: 607700977843
-  ECS_CLUSTER: parth-strapi-cluster
-  ECS_SERVICE: parth-strapi-service
-  TASK_FAMILY: parth-strapi-task
-  DEPLOYMENT_GROUP: parth-dg
-  CODEDEPLOY_APP: parth-strapi-app
+  ECS_CLUSTER_NAME: parth-strapi-cluster
+  ECS_SERVICE_NAME: parth-strapi-service
+  ECS_TASK_FAMILY: parth-strapi-task
+  CODEDEPLOY_APP_NAME: parth-strapi-app
+  CODEDEPLOY_GROUP_NAME: parth-dg
+  CONTAINER_NAME: strapi
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
+    - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Configure AWS credentials
+    - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -38,7 +39,7 @@ jobs:
     - name: Login to Amazon ECR
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build & Push Docker image with GitHub SHA Tag
+    - name: Build and Push Docker Image
       run: |
         IMAGE_TAG=${{ github.sha }}
         ECR_URI=${{ env.ECR_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}
@@ -55,60 +56,47 @@ jobs:
       working-directory: terraform
       run: terraform init
 
-    - name: Terraform Apply with Dynamic Image URL
+    - name: Terraform Apply with ECR Image URL
       working-directory: terraform
       run: terraform apply -auto-approve -var="ecr_image_url=${{ env.IMAGE_URI }}"
 
-    - name: Wait and Fetch New Task Definition ARN
-      id: taskdef
-      run: |
-        echo "Fetching Task Definition ARN..."
-        for i in {1..10}; do
-          TASK_DEF_ARN=$(aws ecs describe-task-definition --task-definition $TASK_FAMILY --query "taskDefinition.taskDefinitionArn" --output text || echo "None")
-          echo "Attempt $i: $TASK_DEF_ARN"
-          if [[ "$TASK_DEF_ARN" != "None" ]]; then
-            echo "Found Task Definition ARN: $TASK_DEF_ARN"
-            echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
-            echo "::set-output name=task_def_arn::$TASK_DEF_ARN"
-            break
-          fi
-          echo "Task Definition not available yet. Retrying in 10s..."
-          sleep 10
-        done
+    - name: Render New ECS Task Definition File
+      id: render-task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: ecs-task-definition.json
+        container-name: ${{ env.CONTAINER_NAME }}
+        image: ${{ env.IMAGE_URI }}
 
-        if [[ "$TASK_DEF_ARN" == "None" ]]; then
-          echo "Failed to fetch Task Definition ARN after retries."
-          exit 1
-        fi
-
-    - name: Replace Task ARN in AppSpec YAML
+    - name: Register New Task Definition
+      id: register-task
       run: |
-        sed -i "s|REPLACE_TASK_DEFINITION_ARN|${{ steps.taskdef.outputs.task_def_arn }}|g" appspec.yaml
-        cat appspec.yaml
+        TASK_DEF_PATH="${{ steps.render-task-def.outputs.task-definition }}"
+        TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://$TASK_DEF_PATH --query 'taskDefinition.taskDefinitionArn' --output text)
+        echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
 
-    - name: Deploy with CodeDeploy (YAML Inline)
+    - name: Prepare AppSpec YAML with Task ARN
       run: |
-        BASE64_CONTENT=$(base64 -w 0 appspec.yaml)
+        sed "s|REPLACE_TASK_DEFINITION_ARN|${{ env.TASK_DEF_ARN }}|g" appspec.yaml > final-appspec.yaml
+
+    - name: Read & Escape YAML AppSpec as JSON String
+      run: |
+        APPSPEC_CONTENT=$(cat final-appspec.yaml | jq -Rs .)
+        echo "APPSPEC_CONTENT=$APPSPEC_CONTENT" >> $GITHUB_ENV
+
+    - name: Trigger CodeDeploy Deployment (YAML AppSpecContent)
+      run: |
         aws deploy create-deployment \
-          --application-name $CODEDEPLOY_APP \
-          --deployment-group-name $DEPLOYMENT_GROUP \
-          --revision revisionType=AppSpecContent,appSpecContent="{content=$BASE64_CONTENT}" \
+          --application-name ${{ env.CODEDEPLOY_APP_NAME }} \
+          --deployment-group-name ${{ env.CODEDEPLOY_GROUP_NAME }} \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
-          --region $AWS_REGION
-
-    - name: Monitor Deployment Status
-      run: |
-        DEPLOYMENT_ID=$(aws deploy list-deployments --application-name $CODEDEPLOY_APP --deployment-group-name $DEPLOYMENT_GROUP --query 'deployments[0]' --output text)
-        echo "Deployment ID: $DEPLOYMENT_ID"
-
-        STATUS="InProgress"
-        while [ "$STATUS" == "InProgress" ]; do
-          STATUS=$(aws deploy get-deployment --deployment-id $DEPLOYMENT_ID --query 'deploymentInfo.status' --output text)
-          echo "Current Deployment Status: $STATUS"
-          sleep 15
-        done
-
-        if [ "$STATUS" != "Succeeded" ]; then
-          echo "Deployment Failed! Exiting..."
-          exit 1
-        fi
+          --cli-input-json "{
+            \"applicationName\": \"${{ env.CODEDEPLOY_APP_NAME }}\",
+            \"deploymentGroupName\": \"${{ env.CODEDEPLOY_GROUP_NAME }}\",
+            \"revision\": {
+              \"revisionType\": \"AppSpecContent\",
+              \"appSpecContent\": {
+                \"content\": ${{ env.APPSPEC_CONTENT }}
+              }
+            }
+          }"
