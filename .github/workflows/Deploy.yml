@@ -65,9 +65,9 @@ jobs:
         echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
         echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
 
-    - name: Prepare AppSpec Bundle ZIP
+    - name: Replace ARN in AppSpec and Zip
       run: |
-        sed "s|REPLACE_TASK_DEFINITION_ARN|${{ steps.taskdef.outputs.task_def_arn }}|g" appspec.yaml > appspec-temp.yaml
+        sed "s|REPLACE_TASK_DEFINITION_ARN|${{ steps.taskdef.outputs.task_def_arn }}|g" appspec.yaml > appspec.yaml
         zip appspec-bundle.zip appspec.yaml
         echo "ZIP Bundle Contents:"
         unzip -l appspec-bundle.zip
