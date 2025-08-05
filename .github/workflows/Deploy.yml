@@ -87,7 +87,7 @@ jobs:
         aws deploy create-deployment \
           --application-name $CODEDEPLOY_APP \
           --deployment-group-name $DEPLOYMENT_GROUP \
-          --revision revisionType=S3Location,s3Location={bucket=$APPSPEC_BUCKET,key=${S3_KEY},bundleType=zip}
+          --s3-location bucket=$APPSPEC_BUCKET,key=${{ env.S3_KEY }},bundleType=zip \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
           --region $AWS_REGION
 
