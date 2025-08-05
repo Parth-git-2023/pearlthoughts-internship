@@ -69,10 +69,16 @@ jobs:
         cp appspec.yaml appspec-prepared.yaml
         sed -i "s|REPLACE_TASK_DEFINITION_ARN|${{ steps.taskdef.outputs.task_def_arn }}|g" appspec-prepared.yaml
 
-    - name: Upload AppSpec to S3
+    - name: Prepare AppSpec ZIP Bundle
       run: |
-        S3_KEY=appspecs/appspec-${{ github.sha }}.yaml
-        aws s3 cp appspec-prepared.yaml s3://$APPSPEC_BUCKET/$S3_KEY
+        mkdir appspec-bundle
+        cp appspec-prepared.yaml appspec-bundle/appspec.yaml
+        zip -r appspec-bundle.zip appspec-bundle
+
+    - name: Upload AppSpec ZIP to S3
+      run: |
+        S3_KEY=appspecs/appspec-${{ github.sha }}.zip
+        aws s3 cp appspec-bundle.zip s3://$APPSPEC_BUCKET/$S3_KEY
         echo "S3_KEY=$S3_KEY" >> $GITHUB_ENV
 
     - name: Trigger CodeDeploy Deployment via S3
@@ -80,7 +86,7 @@ jobs:
         aws deploy create-deployment \
           --application-name $CODEDEPLOY_APP \
           --deployment-group-name $DEPLOYMENT_GROUP \
-          --revision revisionType=S3Location,s3Location="{bucket=$APPSPEC_BUCKET,key=${{ env.S3_KEY }},bundleType=YAML}" \
+          --revision revisionType=S3Location,s3Location="{bucket=$APPSPEC_BUCKET,key=${{ env.S3_KEY }},bundleType=zip}" \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
           --region $AWS_REGION
 
