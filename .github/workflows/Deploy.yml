@@ -69,11 +69,12 @@ jobs:
         cp appspec.yaml appspec-prepared.yaml
         sed -i "s|REPLACE_TASK_DEFINITION_ARN|${{ steps.taskdef.outputs.task_def_arn }}|g" appspec-prepared.yaml
 
-    - name: Prepare AppSpec ZIP Bundle
+    - name: Prepare AppSpec ZIP Bundle from Root
       run: |
-        mkdir appspec-bundle
-        cp appspec-prepared.yaml appspec-bundle/appspec.yaml
+        mkdir -p appspec-bundle
+        cp appspec.yaml appspec-bundle/appspec.yaml
         zip -r appspec-bundle.zip appspec-bundle
+        ls -la appspec-bundle.zip
 
     - name: Upload AppSpec ZIP to S3
       run: |
