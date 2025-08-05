@@ -58,33 +58,38 @@ jobs:
         terraform init
         terraform apply -auto-approve -var="ecr_image_url=${{ env.IMAGE_URI }}"
 
-    - name: Get Task Definition JSON
+    - name: Get Task Definition ARN
+      id: taskdef
       run: |
-        aws ecs describe-task-definition --task-definition $TASK_FAMILY --query "taskDefinition" > taskdef.json
+        TASK_DEF_ARN=$(aws ecs describe-task-definition --task-definition $TASK_FAMILY --query "taskDefinition.taskDefinitionArn" --output text)
+        echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
+        echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
 
     - name: Prepare AppSpec Bundle ZIP
       run: |
-        zip deploy-bundle.zip appspec.yaml
-        echo "AppSpec ZIP Created at Root Level."
+        sed "s|REPLACE_TASK_DEFINITION_ARN|${{ steps.taskdef.outputs.task_def_arn }}|g" appspec.yaml > appspec-temp.yaml
+        zip appspec-bundle.zip appspec-temp.yaml
+        echo "ZIP Bundle Contents:"
+        unzip -l appspec-bundle.zip
 
     - name: Upload AppSpec Bundle to S3
       run: |
-        S3_KEY=deployments/deploy-${{ github.sha }}.zip
-        aws s3 cp deploy-bundle.zip s3://$APPSPEC_BUCKET/$S3_KEY
+        S3_KEY=deployments/appspec-${{ github.sha }}.zip
+        aws s3 cp appspec-bundle.zip s3://$APPSPEC_BUCKET/$S3_KEY
         echo "S3_KEY=$S3_KEY" >> $GITHUB_ENV
-        
-    - name: Ensure AppSpec ZIP is Available in S3
+
+    - name: Ensure S3 Consistency
       run: |
         echo "Waiting for S3 consistency..."
-        sleep 10  # Wait for 10 seconds to ensure S3 eventual consistency
+        sleep 10
         aws s3api head-object --bucket $APPSPEC_BUCKET --key $S3_KEY || { echo "AppSpec ZIP not found in S3! Exiting..."; exit 1; }
 
-    - name: Trigger CodeDeploy Deployment
+    - name: Trigger CodeDeploy Deployment (Revision JSON)
       run: |
         aws deploy create-deployment \
           --application-name $CODEDEPLOY_APP \
           --deployment-group-name $DEPLOYMENT_GROUP \
-          --s3-location bucket=$APPSPEC_BUCKET,key=${{ env.S3_KEY }},bundleType=zip \
+          --revision '{"revisionType":"S3","s3Location":{"bucket":"'$APPSPEC_BUCKET'","key":"'$S3_KEY'","bundleType":"zip"}}' \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
           --region $AWS_REGION
 
@@ -106,4 +111,4 @@ jobs:
         fi
 
     - name: Deployment Successful
-      run: echo "Deployment completed successfully with Task Definition in S3 Bundle!"
+      run: echo "Deployment completed successfully with TaskDef=${{ steps.taskdef.outputs.task_def_arn }}"
