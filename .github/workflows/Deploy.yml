@@ -68,7 +68,7 @@ jobs:
     - name: Prepare AppSpec Bundle ZIP
       run: |
         sed "s|REPLACE_TASK_DEFINITION_ARN|${{ steps.taskdef.outputs.task_def_arn }}|g" appspec.yaml > appspec-temp.yaml
-        zip appspec-bundle.zip appspec-temp.yaml
+        zip appspec-bundle.zip appspec.yaml
         echo "ZIP Bundle Contents:"
         unzip -l appspec-bundle.zip
 
