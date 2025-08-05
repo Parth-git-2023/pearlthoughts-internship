@@ -64,17 +64,20 @@ jobs:
 
     - name: Prepare AppSpec Bundle ZIP
       run: |
-        mkdir -p deploy-bundle
-        cp appspec.yaml deploy-bundle/appspec.yaml
-        cp taskdef.json deploy-bundle/taskdef.json
-        zip -r deploy-bundle.zip deploy-bundle
-        echo "Deploy Bundle Created."
+        zip deploy-bundle.zip appspec.yaml
+        echo "AppSpec ZIP Created at Root Level."
 
     - name: Upload AppSpec Bundle to S3
       run: |
         S3_KEY=deployments/deploy-${{ github.sha }}.zip
         aws s3 cp deploy-bundle.zip s3://$APPSPEC_BUCKET/$S3_KEY
         echo "S3_KEY=$S3_KEY" >> $GITHUB_ENV
+        
+    - name: Ensure AppSpec ZIP is Available in S3
+      run: |
+        echo "Waiting for S3 consistency..."
+        sleep 10  # Wait for 10 seconds to ensure S3 eventual consistency
+        aws s3api head-object --bucket $APPSPEC_BUCKET --key $S3_KEY || { echo "AppSpec ZIP not found in S3! Exiting..."; exit 1; }
 
     - name: Trigger CodeDeploy Deployment
       run: |
