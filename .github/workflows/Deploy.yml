@@ -100,6 +100,6 @@ jobs:
           echo "Deployment Failed! Exiting..."
           exit 1
         fi
-        
+
     - name: Deployment Triggered
-      run: echo "Deployment Triggered Successfully with TaskDef: ${{ steps.taskdef.outputs.task_def_arn }}"
+      run: echo "Deployment Triggered Successfully with TaskDef:${{ steps.taskdef.outputs.task_def_arn }}"
