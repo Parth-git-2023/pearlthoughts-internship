@@ -1,4 +1,4 @@
-name: Deploy to ECS Fargate with Blue/Green
+name: Deploy to ECS Fargate with Blue/Green via S3
 
 on:
   push:
@@ -14,16 +14,16 @@ env:
   TASK_FAMILY: parth-strapi-task
   DEPLOYMENT_GROUP: parth-dg
   CODEDEPLOY_APP: parth-strapi-app
+  APPSPEC_BUCKET: parth-codedeploy-appspecs
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout code
+    - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Configure AWS credentials
+    - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -38,7 +38,7 @@ jobs:
     - name: Login to Amazon ECR
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build & Push Docker image with GitHub SHA Tag
+    - name: Build & Push Docker Image
       run: |
         IMAGE_TAG=${{ github.sha }}
         ECR_URI=${{ env.ECR_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}
@@ -51,48 +51,36 @@ jobs:
       with:
         terraform_version: 1.6.6
 
-    - name: Terraform Init
+    - name: Terraform Init & Apply
       working-directory: terraform
-      run: terraform init
+      run: |
+        terraform init
+        terraform apply -auto-approve -var="ecr_image_url=${{ env.IMAGE_URI }}"
 
-    - name: Terraform Apply with Dynamic Image URL
-      working-directory: terraform
-      run: terraform apply -auto-approve -var="ecr_image_url=${{ env.IMAGE_URI }}"
-
-    - name: Wait and Fetch New Task Definition ARN
+    - name: Get New Task Definition ARN
       id: taskdef
       run: |
-        echo "Fetching Task Definition ARN..."
-        for i in {1..10}; do
-          TASK_DEF_ARN=$(aws ecs describe-task-definition --task-definition $TASK_FAMILY --query "taskDefinition.taskDefinitionArn" --output text || echo "None")
-          echo "Attempt $i: $TASK_DEF_ARN"
-          if [[ "$TASK_DEF_ARN" != "None" ]]; then
-            echo "Found Task Definition ARN: $TASK_DEF_ARN"
-            echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
-            echo "::set-output name=task_def_arn::$TASK_DEF_ARN"
-            break
-          fi
-          echo "Task Definition not available yet. Retrying in 10s..."
-          sleep 10
-        done
+        TASK_DEF_ARN=$(aws ecs describe-task-definition --task-definition $TASK_FAMILY --query "taskDefinition.taskDefinitionArn" --output text)
+        echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
+        echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
 
-        if [[ "$TASK_DEF_ARN" == "None" ]]; then
-          echo "Failed to fetch Task Definition ARN after retries."
-          exit 1
-        fi
-
-    - name: Replace Task ARN in AppSpec YAML
+    - name: Prepare AppSpec File with Task ARN
       run: |
-        sed -i "s|REPLACE_TASK_DEFINITION_ARN|${{ steps.taskdef.outputs.task_def_arn }}|g" appspec.yaml
-        cat appspec.yaml
+        cp appspec.yaml appspec-prepared.yaml
+        sed -i "s|REPLACE_TASK_DEFINITION_ARN|${{ steps.taskdef.outputs.task_def_arn }}|g" appspec-prepared.yaml
 
-    - name: Deploy with CodeDeploy (YAML Inline)
+    - name: Upload AppSpec to S3
       run: |
-        BASE64_CONTENT=$(base64 -w 0 appspec.yaml)
+        S3_KEY=appspecs/appspec-${{ github.sha }}.yaml
+        aws s3 cp appspec-prepared.yaml s3://$APPSPEC_BUCKET/$S3_KEY
+        echo "S3_KEY=$S3_KEY" >> $GITHUB_ENV
+
+    - name: Trigger CodeDeploy Deployment via S3
+      run: |
         aws deploy create-deployment \
           --application-name $CODEDEPLOY_APP \
           --deployment-group-name $DEPLOYMENT_GROUP \
-          --revision revisionType=AppSpecContent,appSpecContent="{content=$BASE64_CONTENT}" \
+          --revision revisionType=S3Location,s3Location="{bucket=$APPSPEC_BUCKET,key=${{ env.S3_KEY }},bundleType=YAML}" \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
           --region $AWS_REGION
 
@@ -112,3 +100,6 @@ jobs:
           echo "Deployment Failed! Exiting..."
           exit 1
         fi
+        
+    - name: Deployment Triggered
+      run: echo "Deployment Triggered Successfully with TaskDef: ${{ steps.taskdef.outputs.task_def_arn }}"

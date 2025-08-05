@@ -8,11 +8,12 @@ env:
   ECS_CLUSTER: parth-strapi-cluster
   ECS_SERVICE: parth-strapi-service
   ALB_NAME: parth-strapi-alb
-  TARGET_GROUP_BLUE: parth-strapi-tg-blue
-  TARGET_GROUP_GREEN: parth-strapi-tg-green
-  DEPLOYMENT_GROUP: parth-strapi-dg
+  TARGET_GROUP_BLUE: parth-strapi-blue
+  TARGET_GROUP_GREEN: parth-strapi-green
+  DEPLOYMENT_GROUP: parth-dg
   CODEDEPLOY_APP: parth-strapi-app
   ECR_REPO: parth-strapi-ecr
+  S3_BUCKET: parth-codedeploy-appspecs
 
 jobs:
   destroy:
@@ -26,20 +27,34 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Force Delete ECS Service
+    - name: Scale Down & Delete ECS Service
       run: |
         aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --desired-count 0 || true
+        sleep 30  # Give it time to scale down
         aws ecs delete-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --force || true
 
-    - name: Delete ECS Cluster
+    - name: Deregister All Task Definitions
       run: |
-        aws ecs delete-cluster --cluster $ECS_CLUSTER || true
+        TASK_DEFS=$(aws ecs list-task-definitions --family-prefix $ECS_SERVICE --query 'taskDefinitionArns' --output text) || true
+        for TD in $TASK_DEFS; do
+          aws ecs deregister-task-definition --task-definition $TD || true
+        done
+
+    - name: Delete CodeDeploy Deployment Group
+      run: |
+        aws deploy delete-deployment-group --application-name $CODEDEPLOY_APP --deployment-group-name $DEPLOYMENT_GROUP || true
+
+    - name: Delete CodeDeploy Application
+      run: |
+        aws deploy delete-application --application-name $CODEDEPLOY_APP || true
 
     - name: Delete Load Balancer
       run: |
         ALB_ARN=$(aws elbv2 describe-load-balancers --names $ALB_NAME --query "LoadBalancers[0].LoadBalancerArn" --output text) || true
         if [ "$ALB_ARN" != "None" ]; then
           aws elbv2 delete-load-balancer --load-balancer-arn $ALB_ARN || true
+          echo "Waiting for ALB deletion..."
+          aws elbv2 wait load-balancers-deleted --load-balancer-arns $ALB_ARN || true
         fi
 
     - name: Delete Target Groups
@@ -51,21 +66,22 @@ jobs:
           fi
         done
 
-    - name: Delete Security Groups (if applicable)
+    - name: Delete ECS Cluster
       run: |
-        SG_IDS=$(aws ec2 describe-security-groups --query "SecurityGroups[?GroupName=='parth-strapi-sg'].[GroupId]" --output text) || true
+        aws ecs delete-cluster --cluster $ECS_CLUSTER || true
+
+    - name: Delete Security Groups
+      run: |
+        SG_IDS=$(aws ec2 describe-security-groups --query "SecurityGroups[?starts_with(GroupName, 'parth-')].[GroupId]" --output text) || true
         for SG_ID in $SG_IDS; do
           aws ec2 delete-security-group --group-id $SG_ID || true
         done
 
-    - name: Delete CodeDeploy Deployment Group
+    - name: Delete S3 Bucket & Contents
       run: |
-        aws deploy delete-deployment-group --application-name $CODEDEPLOY_APP --deployment-group-name $DEPLOYMENT_GROUP || true
+        aws s3 rm s3://$S3_BUCKET --recursive || true
+        aws s3api delete-bucket --bucket $S3_BUCKET || true
 
-    - name: Delete CodeDeploy Application
-      run: |
-        aws deploy delete-application --application-name $CODEDEPLOY_APP || true
-
-    - name: Delete ECR Repository (Optional)
+    - name: Delete ECR Repository (Force Delete Images)
       run: |
         aws ecr delete-repository --repository-name $ECR_REPO --force || true

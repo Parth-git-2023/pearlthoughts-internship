@@ -224,6 +224,34 @@ resource "aws_codedeploy_deployment_group" "parth_deployment_group" {
   depends_on = [aws_ecs_service.parth_service]
 }
 
+# S3 Bucket for AppSpec files
+resource "aws_s3_bucket" "appspec_bucket" {
+  bucket = "parth-codedeploy-appspecs"
+
+  tags = {
+    Name = "Parth CodeDeploy AppSpec Bucket"
+  }
+}
+
+# S3 Bucket Policy to allow CodeDeploy access
+resource "aws_s3_bucket_policy" "codedeploy_appspec_policy" {
+  bucket = aws_s3_bucket.appspec_bucket.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Principal = {
+          Service = "codedeploy.amazonaws.com"
+        },
+        Action = "s3:GetObject",
+        Resource = "${aws_s3_bucket.appspec_bucket.arn}/*"
+      }
+    ]
+  })
+}
+
 output "alb_dns_name" {
   value = aws_lb.parth_alb.dns_name
 }
