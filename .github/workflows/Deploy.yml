@@ -1,4 +1,4 @@
-name: Deploy to ECS Fargate with Blue/Green via S3
+name: Deploy to ECS Fargate with CodeDeploy (S3 AppSpec Bundle)
 
 on:
   push:
@@ -19,6 +19,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
     - name: Checkout Code
       uses: actions/checkout@v4
@@ -57,32 +58,49 @@ jobs:
         terraform init
         terraform apply -auto-approve -var="ecr_image_url=${{ env.IMAGE_URI }}"
 
-    - name: Get New Task Definition ARN
-      id: taskdef
+    - name: Get Task Definition JSON
       run: |
-        TASK_DEF_ARN=$(aws ecs describe-task-definition --task-definition $TASK_FAMILY --query "taskDefinition.taskDefinitionArn" --output text)
-        echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
-        echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
+        aws ecs describe-task-definition --task-definition $TASK_FAMILY --query "taskDefinition" > taskdef.json
 
-    - name: Prepare AppSpec File with Task ARN
+    - name: Prepare AppSpec Bundle ZIP
       run: |
-        cp appspec.yaml appspec-prepared.yaml
-        sed -i "s|REPLACE_TASK_DEFINITION_ARN|${{ steps.taskdef.outputs.task_def_arn }}|g" appspec-prepared.yaml
+        mkdir -p deploy-bundle
+        cp appspec.yaml deploy-bundle/appspec.yaml
+        cp taskdef.json deploy-bundle/taskdef.json
+        zip -r deploy-bundle.zip deploy-bundle
+        echo "Deploy Bundle Created."
 
-    - name: Upload AppSpec to S3
+    - name: Upload AppSpec Bundle to S3
       run: |
-        S3_KEY=appspecs/appspec-${{ github.sha }}.yaml
-        aws s3 cp appspec-prepared.yaml s3://$APPSPEC_BUCKET/$S3_KEY
+        S3_KEY=deployments/deploy-${{ github.sha }}.zip
+        aws s3 cp deploy-bundle.zip s3://$APPSPEC_BUCKET/$S3_KEY
         echo "S3_KEY=$S3_KEY" >> $GITHUB_ENV
 
-    - name: Trigger CodeDeploy Deployment via S3
+    - name: Trigger CodeDeploy Deployment
       run: |
         aws deploy create-deployment \
           --application-name $CODEDEPLOY_APP \
           --deployment-group-name $DEPLOYMENT_GROUP \
-          --revision revisionType=S3Location,s3Location="{bucket=$APPSPEC_BUCKET,key=${{ env.S3_KEY }},bundleType=YAML}" \
+          --s3-location bucket=$APPSPEC_BUCKET,key=${{ env.S3_KEY }},bundleType=zip \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
           --region $AWS_REGION
 
-    - name: Deployment Triggered
-      run: echo "Deployment Triggered Successfully with TaskDef:${{ steps.taskdef.outputs.task_def_arn }}"
+    - name: Monitor Deployment Status
+      run: |
+        DEPLOYMENT_ID=$(aws deploy list-deployments --application-name $CODEDEPLOY_APP --deployment-group-name $DEPLOYMENT_GROUP --query 'deployments[0]' --output text)
+        echo "Deployment ID: $DEPLOYMENT_ID"
+
+        STATUS="InProgress"
+        while [ "$STATUS" == "InProgress" ]; do
+          STATUS=$(aws deploy get-deployment --deployment-id $DEPLOYMENT_ID --query 'deploymentInfo.status' --output text)
+          echo "Current Deployment Status: $STATUS"
+          sleep 15
+        done
+
+        if [ "$STATUS" != "Succeeded" ]; then
+          echo "Deployment Failed! Exiting..."
+          exit 1
+        fi
+
+    - name: Deployment Successful
+      run: echo "Deployment completed successfully with Task Definition in S3 Bundle!"
