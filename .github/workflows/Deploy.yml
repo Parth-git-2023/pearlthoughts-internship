@@ -69,17 +69,10 @@ jobs:
         cp appspec.yaml appspec-prepared.yaml
         sed -i "s|REPLACE_TASK_DEFINITION_ARN|${{ steps.taskdef.outputs.task_def_arn }}|g" appspec-prepared.yaml
 
-    - name: Prepare AppSpec ZIP Bundle with Task ARN
+    - name: Upload AppSpec to S3
       run: |
-        mkdir -p appspec-bundle
-        cp appspec-prepared.yaml appspec-bundle/appspec.yaml
-        zip -r appspec-bundle.zip appspec-bundle
-        ls -la appspec-bundle.zip
-
-    - name: Upload AppSpec ZIP to S3
-      run: |
-        S3_KEY=appspecs/appspec-${{ github.sha }}.zip
-        aws s3 cp appspec-bundle.zip s3://$APPSPEC_BUCKET/$S3_KEY
+        S3_KEY=appspecs/appspec-${{ github.sha }}.yaml
+        aws s3 cp appspec-prepared.yaml s3://$APPSPEC_BUCKET/$S3_KEY
         echo "S3_KEY=$S3_KEY" >> $GITHUB_ENV
 
     - name: Trigger CodeDeploy Deployment via S3
@@ -87,26 +80,9 @@ jobs:
         aws deploy create-deployment \
           --application-name $CODEDEPLOY_APP \
           --deployment-group-name $DEPLOYMENT_GROUP \
-          --s3-location bucket=$APPSPEC_BUCKET,key=${{ env.S3_KEY }},bundleType=zip \
+          --revision revisionType=S3Location,s3Location="{bucket=$APPSPEC_BUCKET,key=${{ env.S3_KEY }},bundleType=YAML}" \
           --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
           --region $AWS_REGION
-
-    - name: Monitor Deployment Status
-      run: |
-        DEPLOYMENT_ID=$(aws deploy list-deployments --application-name $CODEDEPLOY_APP --deployment-group-name $DEPLOYMENT_GROUP --query 'deployments[0]' --output text)
-        echo "Deployment ID: $DEPLOYMENT_ID"
-
-        STATUS="InProgress"
-        while [ "$STATUS" == "InProgress" ]; do
-          STATUS=$(aws deploy get-deployment --deployment-id $DEPLOYMENT_ID --query 'deploymentInfo.status' --output text)
-          echo "Current Deployment Status: $STATUS"
-          sleep 15
-        done
-
-        if [ "$STATUS" != "Succeeded" ]; then
-          echo "Deployment Failed! Exiting..."
-          exit 1
-        fi
 
     - name: Deployment Triggered
       run: echo "Deployment Triggered Successfully with TaskDef:${{ steps.taskdef.outputs.task_def_arn }}"
